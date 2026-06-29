@@ -1,39 +1,39 @@
 # Silent Hill 1 — Nintendo Switch Port
 
-Форк PC-порта Silent Hill, адаптированный для запуска на **Nintendo Switch** через devkitPro + libnx.
+Port of the Silent Hill PC port targeting Nintendo Switch via devkitPro + libnx.
 
-Ветка: `feature/switch-port`
-
----
-
-## Статус
-
-**Work in Progress.** Инфраструктура сборки готова, порт компилируется, но:
-- [x] Компиляция под ARM64 (devkitPro + libnx)
-- [x] Подключены SDL2, OpenAL, libjpeg-turbo (статическая линковка)
-- [x] OpenGL ES 3.0 рендеринг через PsyCross
-- [ ] Тестирование на реальном Switch
-- [ ] Полная компиляция всех 42 карт (пока только map0_s00)
-- [ ] Оптимизация под 720p / handheld
-- [ ] Joy-Con / Pro Controller маппинг
-- [ ] FMV-плеер под ARM
-- [ ] Сохранение (Memory Card)
+**Branch:** `feature/switch-port`
 
 ---
 
-## Сборка
+## Status
 
-### Требования
+Build infrastructure is complete. The port compiles but has not been tested on hardware yet.
 
-- [devkitPro](https://devkitpro.org) с пакетами:
+- [x] CMake + Ninja build for aarch64 (devkitPro)
+- [x] SDL2, OpenAL, libjpeg-turbo (static linking)
+- [x] OpenGL ES 3.0 via PsyCross
+- [ ] Hardware testing on Switch
+- [ ] All 42 maps (only map0_s00 compiled)
+- [ ] Joy-Con / Pro Controller mapping
+- [ ] FMV playback on ARM
+- [ ] Save/load (memory card)
+
+---
+
+## Building
+
+### Prerequisites
+
+- [devkitPro](https://devkitpro.org) with Switch packages:
   ```
   dkp-pacman -S switch-dev switch-cmake ninja
   dkp-pacman -S switch-sdl2 switch-openal-soft switch-libjpeg-turbo
   ```
 - CMake 3.16+, Ninja
-- Git + submodule
+- Git with submodule support
 
-### Сборка
+### Steps
 
 ```bash
 git clone https://github.com/ChaykaDed/silent-hill-decomp-nx.git
@@ -45,13 +45,11 @@ cd pc_port
 ./build_switch.sh rebuild
 ```
 
-Результат: `pc_port/build_switch/SilentHillPC.nro`
+**Output:** `pc_port/build_switch/SilentHillPC.nro`
 
 ---
 
-## Управление (Switch)
-
-На текущем этапе — стандартные PSX-кнопки через SDL. Joy-Con mapping будет добавлен позже.
+## Controls (Switch)
 
 | PSX Button | Switch |
 |------------|--------|
@@ -62,40 +60,39 @@ cd pc_port
 | Start | + |
 | Select | - |
 | D-Pad | D-Pad |
-| L1 / R1 | L / R |
-| L2 / R2 | ZL / ZR |
+| L1 / L2 | L / ZL |
+| R1 / R2 | R / ZR |
 
 ---
 
-## Данные
+## Game Data
 
-Требуется оригинальный диск Silent Hill (PSX). Поместите BIN-образ в директорию `gamedata/` рядом с NRO-файлом.
+Place a Silent Hill (PS1) disc dump (BIN format) in the `gamedata/` directory next to the NRO file.
 
 ---
 
-## Структура
+## Project Structure
 
 ```
-├── pc_port/                  # Порт-слой (PC/Switch)
-│   ├── CMakeLists.txt        # Сборочная система
-│   ├── build_switch.sh       # Скрипт сборки под Switch
-│   ├── toolchains/           # Тулчейн devkitPro
-│   ├── PsyCross/             # PSX HAL (сабмодуль)
-│   └── src/                  # Stubs, переходники, FMV-плеер
-├── src/                      # Декомпилированный код игры
-│   ├── bodyprog/             # Движок
-│   └── maps/                 # Карты
-├── include/                  # Заголовки
-└── SWITCH_PORT_README.md     # Подробная документация порта
+pc_port/                  Port layer (PC/Switch shims)
+├── CMakeLists.txt        Build system
+├── build_switch.sh       Switch build script
+├── toolchains/           devkitPro cmake toolchain
+├── PsyCross/             PSX hardware abstraction layer (submodule)
+└── src/                  Stubs, reformatters, FMV player
+src/                      Decompiled game code
+├── bodyprog/             Core engine
+└── maps/                 42 map overlays
+include/                  Headers
 ```
 
 ---
 
-## Благодарности
+## Credits
 
-- Оригинальная декомпиляция: [Vatuu/silent-hill-decomp](https://github.com/Vatuu/silent-hill-decomp)
-- PC-порт: [SlickAmogus/silent-hill-decomp](https://github.com/SlickAmogus/silent-hill-decomp)
+- Decompilation: [Vatuu/silent-hill-decomp](https://github.com/Vatuu/silent-hill-decomp)
+- PC port: [SlickAmogus/silent-hill-decomp](https://github.com/SlickAmogus/silent-hill-decomp)
 - PsyCross: [OpenDriver2/PsyCross](https://github.com/OpenDriver2/PsyCross)
-- devkitPro + libnx: [devkitPro](https://devkitpro.org)
+- devkitPro: [devkitPro](https://devkitpro.org)
 
-Silent Hill © Konami. Репозиторий не содержит игровых ассетов.
+Silent Hill © Konami. No game assets are included in this repository.
