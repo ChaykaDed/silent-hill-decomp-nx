@@ -15,6 +15,10 @@
 #define SDL_MAIN_HANDLED
 #if defined(__SWITCH__)
 #include <SDL2/SDL.h>
+/* svcOutputDebugString — declared in libnx <svc.h> but including that header
+ * risks type-name collisions with the decomp codebase. Forward-declare the
+ * specific function we need instead. */
+extern void svcOutputDebugString(const char *str, size_t len);
 #else
 #include <SDL.h>
 #endif
@@ -266,7 +270,11 @@ extern void Sh_InstallCrashFilter(void);
 
 
 /* Game data path - where the extracted game files are located */
+#if defined(__SWITCH__)
+static char g_GameDataPath[512] = "sdmc:/gamedata";
+#else
 static char g_GameDataPath[512] = "./gamedata";
+#endif
 
 /* Public accessor — used by xa_player.c (and anything else that needs to
  * locate the disc image at runtime) so we don't sprinkle search-path arrays
@@ -334,6 +342,16 @@ const char* PcPort_GetGameDiscPath(void)
     int  i;
     DIR* dir;
 
+#if defined(__SWITCH__)
+    {
+        char _dbg[256];
+        int _n = snprintf(_dbg, sizeof(_dbg),
+            "[SH:DEBUG] PcPort_GetGameDiscPath: g_GameDataPath=\"%s\"\n",
+            g_GameDataPath);
+        if (_n > 0) svcOutputDebugString(_dbg, _n > 255 ? 255 : _n);
+    }
+#endif
+
     if (g_DiscResolved)
         return g_GameDiscPath;
     g_DiscResolved = 1;
@@ -342,6 +360,14 @@ const char* PcPort_GetGameDiscPath(void)
     {
         FILE* f;
         snprintf(path, sizeof(path), "%s/%s", g_GameDataPath, s_known[i].name);
+#if defined(__SWITCH__)
+        {
+            char _dbg[256];
+            int _n = snprintf(_dbg, sizeof(_dbg),
+                "[SH:DEBUG] Trying: %s\n", path);
+            if (_n > 0) svcOutputDebugString(_dbg, _n > 255 ? 255 : _n);
+        }
+#endif
         f = fopen(path, "rb");
         if (f)
         {
@@ -778,9 +804,18 @@ int main(int argc, char* argv[])
         if (cdImagePath[0]) {
             SH_LOG("CD image found, initializing CDFS...");
             PsyX_CDFS_Init(cdImagePath, 0, 0);
-        } else {
-            SH_WARN("Game will not be able to load assets without a disc image.");
+    } else {
+        SH_WARN("Game will not be able to load assets without a disc image.");
+#if defined(__SWITCH__)
+        {
+            char _dbg[256];
+            int _n = snprintf(_dbg, sizeof(_dbg),
+                "[SH:DEBUG] No disc image found. g_GameDataPath=%s\n",
+                g_GameDataPath);
+            if (_n > 0) svcOutputDebugString(_dbg, _n > 255 ? 255 : _n);
         }
+#endif
+    }
     }
 
     /* Region-specific data tweaks now that g_GameRegion is known (e.g. PAL's
