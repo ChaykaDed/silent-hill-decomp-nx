@@ -1470,6 +1470,27 @@ void MainLoop(void) // 0x80032EE0
         // Call update function for current GameState.
         g_GameStateUpdateFuncs[g_GameWork.gameState]();
 #ifdef SH_PC_PORT
+#if defined(__SWITCH__)
+        /* Log game state every ~60 frames so we can see in Ryujinx's log where
+         * the boot sequence hangs (black screen after logos). */
+        {
+            static int s_frameCounter = 0;
+            static int s_lastState = -1;
+            if (++s_frameCounter >= 60 || g_GameWork.gameState != s_lastState) {
+                s_frameCounter = 0;
+                s_lastState = g_GameWork.gameState;
+                extern void svcOutputDebugString(const char *str, size_t len);
+                char _dbg[128];
+                int _n = snprintf(_dbg, sizeof(_dbg),
+                    "[SH:D] gs=%d st0=%d st1=%d st2=%d\n",
+                    g_GameWork.gameState,
+                    g_GameWork.gameStateSteps[0],
+                    g_GameWork.gameStateSteps[1],
+                    g_GameWork.gameStateSteps[2]);
+                if (_n > 0) svcOutputDebugString(_dbg, _n > 127 ? 127 : _n);
+            }
+        }
+#endif
         if (g_GameWork.gameState == GameState_InGame) {
             /* Canary checks after InGame state update */
             /* --- Canary checks after game state update --- */

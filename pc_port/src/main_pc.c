@@ -469,6 +469,17 @@ int main(int argc, char* argv[])
     /* Load config file */
     PcConfig_Load("config.cfg");
 
+#if defined(__SWITCH__)
+    /* Force skip intros on Switch — the FMV player uses desktop GL shaders
+     * (#version 140) which fail to compile under GLES 3.0, and BIN-file
+     * OpenDiscImage (fmv_player.cpp:590) hardcodes "Silent Hill (USA).bin"
+     * relative to gamedata/, potentially doubling up on the image path. The
+     * logos render fine; the black screen appears when GameState_MovieIntro
+     * calls FMV_Play. Bypass all intro/FMV states and go straight to the
+     * main menu. */
+    g_PcConfig.skipIntros = 1;
+#endif
+
     /* Now that we know whether logging is enabled, open the log file (or
      * leave g_ShDebugLog NULL so SH_DBG stays a no-op). */
     if (g_PcConfig.enableDebugLog) {
