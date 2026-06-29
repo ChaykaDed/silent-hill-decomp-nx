@@ -6,21 +6,6 @@ Port of the Silent Hill PC port targeting Nintendo Switch via devkitPro + libnx.
 
 ---
 
-## Status
-
-Build infrastructure is complete. The port compiles but has not been tested on hardware yet.
-
-- [x] CMake + Ninja build for aarch64 (devkitPro)
-- [x] SDL2, OpenAL, libjpeg-turbo (static linking)
-- [x] OpenGL ES 3.0 via PsyCross
-- [ ] Hardware testing on Switch
-- [ ] All 42 maps (only map0_s00 compiled)
-- [ ] Joy-Con / Pro Controller mapping
-- [ ] FMV playback on ARM
-- [ ] Save/load (memory card)
-
----
-
 ## Building
 
 ### Prerequisites
