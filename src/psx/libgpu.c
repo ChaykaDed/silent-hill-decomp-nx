@@ -1,3 +1,4 @@
+#include <stdarg.h>
 #include "psx/libgte.h"
 #include "psx/libgpu.h"
 #include "psx/libetc.h"

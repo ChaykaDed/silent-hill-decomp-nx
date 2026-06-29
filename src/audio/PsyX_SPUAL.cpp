@@ -127,7 +127,7 @@ ALuint		g_nAlReverbEffect = 0;
 int			g_enableSPUReverb = 0;
 int			g_ALEffectsSupported = 0;
 
-#ifndef __EMSCRIPTEN__
+#if !defined(__EMSCRIPTEN__) && !defined(__SWITCH__)
 
 LPALGENEFFECTS alGenEffects = NULL;
 LPALDELETEEFFECTS alDeleteEffects = NULL;
@@ -137,12 +137,12 @@ LPALGENAUXILIARYEFFECTSLOTS alGenAuxiliaryEffectSlots = NULL;
 LPALDELETEAUXILIARYEFFECTSLOTS alDeleteAuxiliaryEffectSlots = NULL;
 LPALAUXILIARYEFFECTSLOTI alAuxiliaryEffectSloti = NULL;
 
-#endif // __EMSCRIPTEN__
+#endif
 
 static void InitOpenAlEffects()
 {
 	g_ALEffectsSupported = 0;
-#ifndef __EMSCRIPTEN__
+#if !defined(__EMSCRIPTEN__) && !defined(__SWITCH__)
 	if (!alcIsExtensionPresent(g_ALCdevice, ALC_EXT_EFX_NAME))
 	{
 		eprintf("PSX SPU effects are NOT supported!\n");
@@ -184,7 +184,7 @@ static void InitOpenAlEffects()
 	eprintf("PSX SPU effects are supported and initialized\n");
 
 	alAuxiliaryEffectSloti(g_ALEffectSlots[g_currEffectSlotIdx], AL_EFFECTSLOT_EFFECT, g_nAlReverbEffect);
-#endif // __EMSCRIPTEN__
+#endif
 }
 
 int PsyX_SPUAL_InitSound()
@@ -307,9 +307,11 @@ void PsyX_SPUAL_ShutdownSound()
 
 	if (g_ALEffectsSupported)
 	{
+#ifndef __SWITCH__
 		alDeleteEffects(1, &g_nAlReverbEffect);
-		g_ALEffectsSupported = AL_NONE;
 		alDeleteAuxiliaryEffectSlots(1, g_ALEffectSlots);
+#endif
+		g_ALEffectsSupported = AL_NONE;
 	}
 
 	alcDestroyContext(g_ALCcontext);
@@ -1118,7 +1120,7 @@ int PsyX_SPUAL_SetReverb(int on_off)
 
 	if (!g_spuInit)
 		return old_state;
-#ifndef __EMSCRIPTEN__
+#if !defined(__EMSCRIPTEN__) && !defined(__SWITCH__)
 	// switch if needed
 	if (g_ALEffectsSupported && old_state != g_enableSPUReverb)
 	{
@@ -1133,7 +1135,7 @@ int PsyX_SPUAL_SetReverb(int on_off)
 			alAuxiliaryEffectSloti(g_ALEffectSlots[1], AL_EFFECTSLOT_EFFECT, AL_EFFECT_NULL);
 		}
 	}
-#endif // __EMSCRIPTEN__
+#endif
 	return old_state;
 }
 

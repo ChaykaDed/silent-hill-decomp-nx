@@ -76,7 +76,7 @@ void close_gl(void) {
     }
 }
 #else
-#include <dlfcn.h>
+// 
 static void* libGL;
 
 #if !defined(__APPLE__) && !defined(__HAIKU__)

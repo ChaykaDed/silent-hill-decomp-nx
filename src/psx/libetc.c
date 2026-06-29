@@ -3,7 +3,11 @@
 #include "../PsyX_main.h"
 #include "PsyX/PsyX_public.h"
 
+#if defined(__SWITCH__)
+#include <SDL2/SDL_timer.h>
+#else
 #include <SDL_timer.h>
+#endif
 
 #ifdef DEBUG
 char scratchData[4096 + 8];

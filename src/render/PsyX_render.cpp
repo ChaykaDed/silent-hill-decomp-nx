@@ -16,6 +16,9 @@
 
 #include <assert.h>
 #include <string.h>
+#if defined(__SWITCH__)
+#include <SDL2/SDL.h>
+#endif
 
 #ifdef _WIN32
 
@@ -169,6 +172,11 @@ int g_cfg_affineTextures = 0;
  * primitives that don't request dither at the prim-tag level. */
 int g_cfg_psxDither = 1;
 int g_PsxDitherSuppressed = 0;
+int g_cfg_tonemap = 0;
+int g_PsyX_UsePerPixelFlashlight = 0;
+int g_PsyX_FlashlightActive = 0;
+float g_PsyX_FlashlightPos[3] = {0.0f};
+float g_PsyX_FlashlightDir[3] = {0.0f};
 
 int vram_need_update = 1;
 
@@ -464,11 +472,13 @@ int GR_InitialiseGLContext(char* windowName, int fullscreen)
 
 int GR_InitialiseGLExt()
 {
-#ifdef USE_GLAD
+#if !defined(__SWITCH__)
+#if defined(USE_GLAD)
 	GLenum err = gladLoadGL();
 
 	if (err == 0)
 		return 0;
+#endif
 #endif
 	
 	const char* rend = (const char*)glGetString(GL_RENDERER);

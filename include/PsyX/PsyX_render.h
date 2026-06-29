@@ -18,6 +18,13 @@
 #elif defined(__ANDROID__)
 #   define RENDERER_OGLES
 #   define OGLES_VERSION (3)
+#elif defined(__SWITCH__)
+#   ifndef RENDERER_OGLES
+#       define RENDERER_OGLES
+#   endif
+#   ifndef OGLES_VERSION
+#       define OGLES_VERSION (3)
+#   endif
 #endif
 
 #if defined(RENDERER_OGL) || defined(RENDERER_OGLES)
@@ -48,7 +55,7 @@
 
 #   define GL_GLEXT_PROTOTYPES
 
-#if defined(USE_GLAD)
+#if defined(USE_GLAD) || defined(__SWITCH__)
 #   include "common/glad.h"
 #else
 #   ifdef __EMSCRIPTEN__

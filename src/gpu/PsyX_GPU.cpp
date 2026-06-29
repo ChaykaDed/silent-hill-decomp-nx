@@ -1242,16 +1242,13 @@ void DrawAllSplits()
 			vert->g = 0;
 			vert->b = 0;
 
-			eprintf("==========================================\n");
-			eprintf("POLYGON: %d\n", g_dbg_polygonSelected);
-			eprintf("X: %d Y: %d
-", vert->x, vert->y);
-			eprintf("U: %d V: %d
-", vert->u, vert->v);
-			eprintf("TP: %d CLT: %d
-", vert->page, vert->clut);
+			eprintf(" ==========================================\n");
+			eprintf(" POLYGON: %d\n", g_dbg_polygonSelected);
+                        eprintf("X: %d Y: %d\n", vert->x, vert->y);
+                        eprintf("U: %d V: %d\n", vert->u, vert->v);
+                        eprintf("TP: %d CLT: %d\n", vert->page, vert->clut);
 			
-			eprintf("==========================================\n");
+			eprintf(" ==========================================\n");
 		}
 
 		PsyX_UpdateInput();

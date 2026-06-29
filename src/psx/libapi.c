@@ -1002,11 +1002,15 @@ int write(int handle, void* buf, int bytes)
 	return bytes;
 }
 
+#ifndef __SWITCH__
+/* Stub for PSX memcard ioctl. Not used on Switch — libnx provides the real
+ * POSIX ioctl (for sockets) which would conflict at link time. */
 int ioctl(int unk00, int unk01, int unk02)
 {
 	(void)unk00; (void)unk01; (void)unk02;
 	return 0;
 }
+#endif
 
 /* ----- Directory enumeration ----- */
 
