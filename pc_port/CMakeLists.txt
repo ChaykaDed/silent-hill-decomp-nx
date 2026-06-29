@@ -28,7 +28,7 @@ set(SH_VERSION "USA" CACHE STRING "Game version (USA, EUR, JAP0, JAP1, JAP2)")
 if(CMAKE_SYSTEM_NAME STREQUAL "Generic" AND CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
     message(STATUS "Building for Nintendo Switch (NX)")
     set(SH_SWITCH ON)
-    add_compile_definitions(__SWITCH__ RENDERER_OGLES OGLES_VERSION=3)
+    add_compile_definitions(__SWITCH__)
 else()
     message(STATUS "Building for PC (Windows/Linux/macOS)")
     set(SH_SWITCH OFF)
@@ -307,7 +307,7 @@ target_link_libraries(${EXECUTABLE_NAME} PRIVATE
 )
 
 if(SDL2_FOUND)
-    target_link_libraries(${EXECUTABLE_NAME} PRIVATE SDL2::SDL2)
+    #target_link_libraries(${EXECUTABLE_NAME} PRIVATE SDL2::SDL2)
     # The code includes <SDL2/SDL.h>, which needs the dir CONTAINING SDL2/ on
     # the search path. On Linux/Windows the SDL2 include dir is .../include
     # (so SDL2/ resolves). Homebrew's SDL2Config points it at .../include/SDL2

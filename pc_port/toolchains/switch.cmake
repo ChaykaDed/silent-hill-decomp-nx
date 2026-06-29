@@ -9,11 +9,16 @@ if(NOT DEFINED DEVKITPRO)
     if(DEFINED ENV{DEVKITPRO})
         set(DEVKITPRO $ENV{DEVKITPRO})
     else()
-        message(FATAL_ERROR "DEVKITPRO not set. Install devkitPro or set env var DEVKITPRO")
+        # Try Windows default path
+        if(EXISTS "C:/devkitPro")
+            set(DEVKITPRO "C:/devkitPro")
+        else()
+            message(FATAL_ERROR "DEVKITPRO not set. Install devkitPro or set env var DEVKITPRO")
+        endif()
     endif()
 endif()
 
-set(DEVKITARM ${DEVKITPRO}/devkitARM)
+set(DEVKITARM ${DEVKITPRO}/devkitA64)
 set(LIBNX ${DEVKITPRO}/libnx)
 
 message(STATUS "Using devkitPro at: ${DEVKITPRO}")
@@ -29,6 +34,9 @@ set(CMAKE_RANLIB ${DEVKITARM}/bin/aarch64-none-elf-ranlib CACHE PATH "Ranlib")
 set(CMAKE_C_FLAGS "-march=armv8-a -mtune=cortex-a57 -mtp=soft -fPIC -ffunction-sections -fdata-sections" CACHE STRING "C flags")
 set(CMAKE_CXX_FLAGS "${CMAKE_C_FLAGS}" CACHE STRING "C++ flags")
 set(CMAKE_EXE_LINKER_FLAGS "-specs=${LIBNX}/switch.specs -Wl,--gc-sections" CACHE STRING "Linker flags")
+
+# Add include directories globally
+include_directories(${DEVKITPRO}/portlibs/switch/include)
 
 # Find packages configuration
 set(CMAKE_FIND_ROOT_PATH ${DEVKITPRO} ${LIBNX})
@@ -54,9 +62,15 @@ set(OPENGL_glesv2_LIBRARY ${DEVKITPRO}/portlibs/switch/lib/libGLESv2.a CACHE FIL
 # Platform-specific definitions
 add_compile_definitions(
     __SWITCH__
+    __LIBNX__
     RENDERER_OGLES
     OGLES_VERSION=3
-    __LIBNX__
 )
 
 message(STATUS "Switch toolchain configured successfully")
+
+# Override Windows-specific linker flags that break cross-compilation
+set(CMAKE_EXE_LINKER_FLAGS_INIT "")
+set(CMAKE_SHARED_LINKER_FLAGS_INIT "")
+set(CMAKE_MODULE_LINKER_FLAGS_INIT "")
+set(CMAKE_STATIC_LINKER_FLAGS_INIT "")

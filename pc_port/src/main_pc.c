@@ -13,7 +13,11 @@
 #include <time.h>
 
 #define SDL_MAIN_HANDLED
+#if defined(__SWITCH__)
+#include <SDL2/SDL.h>
+#else
 #include <SDL.h>
+#endif
 
 #include "common.h"
 #include "game.h"

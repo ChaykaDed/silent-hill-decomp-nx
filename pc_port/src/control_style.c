@@ -12,7 +12,11 @@
 #include "pc_config.h"
 #include "control_style.h"
 
+#if defined(__SWITCH__)
+#include <SDL2/SDL.h>
+#else
 #include <SDL.h>
+#endif
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>

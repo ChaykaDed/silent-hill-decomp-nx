@@ -13,7 +13,11 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
+#if defined(__SWITCH__)
+#include <SDL2/SDL.h>
+#else
 #include <SDL.h>
+#endif
 #include <PsyX/common/glad.h>
 #include "sh_log.h"
 
@@ -57,7 +61,11 @@ static MATRIX gs_light_matrix;
 static long gs_last_ls_t[3] = {0, 0, 0}; /* last translation from GsSetLsMatrix */
 
 /* VCount emulation - simulate PSX H-blank counter using real time */
+#if defined(__SWITCH__)
+#include <SDL2/SDL.h>
+#else
 #include <SDL.h>
+#endif
 #define H_BLANKS_PER_SECOND 15780
 static Uint64 gs_vcount_start = 0;
 static int gs_vcount_active = 0;

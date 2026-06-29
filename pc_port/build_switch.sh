@@ -31,7 +31,7 @@ fi
 echo -e "${GREEN}✓ DEVKITPRO: $DEVKITPRO${NC}"
 
 # Verify compilers exist
-if [ ! -f "$DEVKITPRO/devkitARM/bin/aarch64-none-elf-gcc" ]; then
+if [ ! -f "$DEVKITPRO/devkitA64/bin/aarch64-none-elf-gcc" ]; then
     echo -e "${RED}Error: aarch64-none-elf-gcc not found${NC}"
     echo "Run: dkp-pacman -S switch-gcc"
     exit 1
@@ -49,7 +49,6 @@ case "$MODE" in
         cd "$BUILD_DIR"
         cmake .. \
             -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN" \
-            -DSH_BUILD_MAP_DLLS=ON \
             -DCMAKE_BUILD_TYPE=Release \
             -G Ninja
         echo -e "${GREEN}✓ Configuration complete${NC}"
@@ -62,7 +61,6 @@ case "$MODE" in
             cd "$BUILD_DIR"
             cmake .. \
                 -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN" \
-                -DSH_BUILD_MAP_DLLS=ON \
                 -DCMAKE_BUILD_TYPE=Release \
                 -G Ninja
         fi
@@ -86,7 +84,6 @@ case "$MODE" in
         cd "$BUILD_DIR"
         cmake .. \
             -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN" \
-            -DSH_BUILD_MAP_DLLS=ON \
             -DCMAKE_BUILD_TYPE=Release \
             -G Ninja
         cmake --build . --config Release
