@@ -21,6 +21,10 @@ s_PcConfig g_PcConfig = {
     .menuPillarbox   = 1, /* 1=pillarbox 2D screens (black bars), 0=stretch to fill */
     .allowLooseFiles = 0, /* 0=disc image only, 1=scan gamedata/load/ first */
     .usePgxp        = 0, /* 0=affine textures (PSX look), 1=PGXP perspective correct (WIP) */
+    .msaaSamples    = 0, /* 0=off, 2/4/8 = MSAA sample count */
+    .postProcess    = 0, /* 0=off, 1.. = post-process look */
+    .tonemap        = 0, /* 0=off, 1=Reinhard, 2=ACES, 3=Filmic */
+    .perPixelFlashlight = 0, /* 0=per-vertex (PSX), 1=per-pixel flashlight cone */
     .enableDebugLog = 0, /* 0=no SilentHill.log, 1=write SilentHill.log (debug builds) */
     .allowDebugControls = 0, /* 0=off (default), 1=enable dev/cheat keys */
     .controllerMovement = 2, /* 0=analog, 1=dpad, 2=both */
@@ -32,6 +36,7 @@ s_PcConfig g_PcConfig = {
     .invertControllerY   = 0,
     .tpsAimZoom          = 1, /* zoom TPS/OTS camera in while aiming */
     .crosshair           = 0, /* draw a center crosshair while aiming in TPS/OTS */
+    .aimAssist           = 1, /* OTS/TPS free-aim aim assist (mouse body-coverage + controller auto-aim) */
 
     /* === CLASSIC scheme: tank controls + fixed PSX camera (the default). The
      * keyboard + controller alternates are intentionally unset (== unbound). === */
@@ -283,6 +288,34 @@ void PcConfig_Load(const char* path)
         {
             g_PcConfig.usePgxp = (atoi(value) != 0);
         }
+        else if (strcmp(key, "msaa") == 0)
+        {
+            /* Antialiasing sample count: 0 (off), 2, 4, 8. Anything else snaps
+             * to the nearest sane value so a bad config can't wedge the driver. */
+            int v = atoi(value);
+            if      (v >= 8) v = 8;
+            else if (v >= 4) v = 4;
+            else if (v >= 2) v = 2;
+            else             v = 0;
+            g_PcConfig.msaaSamples = v;
+        }
+        else if (strcmp(key, "post_process") == 0)
+        {
+            int v = atoi(value);
+            if (v < 0) v = 0;
+            g_PcConfig.postProcess = v;
+        }
+        else if (strcmp(key, "tonemap") == 0)
+        {
+            int v = atoi(value);
+            if (v < 0) v = 0;
+            if (v > 3) v = 3;
+            g_PcConfig.tonemap = v;
+        }
+        else if (strcmp(key, "per_pixel_flashlight") == 0)
+        {
+            g_PcConfig.perPixelFlashlight = (atoi(value) != 0);
+        }
         else if (strcmp(key, "enable_debug_log") == 0)
         {
             g_PcConfig.enableDebugLog = (atoi(value) != 0);
@@ -329,6 +362,10 @@ void PcConfig_Load(const char* path)
         else if (strcmp(key, "crosshair") == 0)
         {
             g_PcConfig.crosshair = (atoi(value) != 0);
+        }
+        else if (strcmp(key, "aim_assist") == 0)
+        {
+            g_PcConfig.aimAssist = (atoi(value) != 0);
         }
         else if (strcmp(key, "control_styles") == 0)
         {

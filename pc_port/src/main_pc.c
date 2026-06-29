@@ -642,6 +642,13 @@ int main(int argc, char* argv[])
      * after PsyX_Shutdown). */
     PsyX_Log_SetStream(g_PcConfig.enableDebugLog ? g_ShDebugLog : NULL);
 
+    /* MSAA must be set BEFORE PsyX_Initialise — it drives the SDL multisample
+     * GL attributes chosen at context-creation time (inside GR_InitialiseRender).
+     * If the driver can't honor it, PsyCross retries without MSAA and clears
+     * g_cfg_msaaSamples back to 0. */
+    g_cfg_msaaSamples = g_PcConfig.msaaSamples;
+    SH_LOG("MSAA: %dx", g_cfg_msaaSamples);
+
     /* Initialize PsyCross (creates SDL2 window + OpenGL context) */
     SH_LOG("Initializing PsyCross (SDL2 + OpenGL)...");
     PsyX_Initialise("Silent Hill", windowWidth, windowHeight, g_PcConfig.fullscreen);
@@ -729,6 +736,27 @@ int main(int argc, char* argv[])
      * (declared in PsyX/PsyX_public.h, defined in PsyX_render.cpp) */
     g_PsxUsePgxp = g_PcConfig.usePgxp ? 1 : 0;
     SH_LOG("PGXP: %s", g_PsxUsePgxp ? "ON (perspective-correct, WIP)" : "off (affine)");
+
+    /* Full-screen post-process look (color grade / CRT / scanlines / vignette /
+     * grain / sharpen / PSX downsample / cinematic). Runtime-settable; F2 cycles
+     * it in-game (dbg_overlay.c). */
+    g_cfg_postProcess = g_PcConfig.postProcess;
+    SH_LOG("Post-process: mode %d", g_cfg_postProcess);
+
+    /* Tone-map operator on the final image (0=off,1=Reinhard,2=ACES,3=Filmic).
+     * Runtime-settable; F3 cycles it in-game (dbg_overlay.c). */
+    {
+        extern int g_cfg_tonemap;
+        g_cfg_tonemap = g_PcConfig.tonemap;
+        SH_LOG("Tone mapping: mode %d", g_cfg_tonemap);
+    }
+
+    /* Per-pixel flashlight cone (vs PSX per-vertex lighting). F4 toggles it. */
+    {
+        extern int g_PsyX_UsePerPixelFlashlight;
+        g_PsyX_UsePerPixelFlashlight = g_PcConfig.perPixelFlashlight ? 1 : 0;
+        SH_LOG("Per-pixel flashlight: %s", g_PsyX_UsePerPixelFlashlight ? "ON" : "off");
+    }
 
     /* Initialize PSY-Q subsystems via PsyCross */
     SH_LOG("Initializing PSY-Q subsystems...");

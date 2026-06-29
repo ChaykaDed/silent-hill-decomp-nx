@@ -1536,7 +1536,11 @@ void Player_LogicUpdate(s_SubCharacter* player, s_PlayerExtra* extra, GsCOORDINA
                     bool backEdge = pureBack && !s_prevBack;
                     s_prevBack = pureBack;
 
-                    if (backEdge && g_Player_IsRunning && !s_jumpBackActive) {
+                    /* No quick hop-back in TPS/OTS: a controller's backward stick
+                     * deflection reads as running, which triggered the hop on every
+                     * back-step. Free-aim/modern cameras just walk backward (handled
+                     * by the g_Player_IsMovingBackward branch below). Classic keeps it. */
+                    if (backEdge && g_Player_IsRunning && !s_jumpBackActive && !g_DebugThirdPersonCam) {
                         s_jumpBackActive = 1;
                         s_jumpBackFrames = 0;
                         s_prevJumpBackTime = -1;
@@ -3418,21 +3422,46 @@ void Player_UpperBodyStateUpdate(s_PlayerExtra* extra, e_PlayerUpperBodyState up
  * so frame pacing can never strand a state. */
 typedef enum { PcGun_Aim = 0, PcGun_Fire, PcGun_Reload } e_PcGunState;
 
+/* Frames a new shot is locked out after firing — debounces analog-trigger
+ * threshold jitter (a single controller pull crossing the digital threshold
+ * 2-3 times read as 2-3 shots). The release-required edge below is the primary
+ * guard; this just absorbs noise. Frame-based, kept small so semi-auto mashing
+ * is unaffected. */
+#define PC_GUN_REFIRE_CD 4
+
 static void Pc_FreeAimGunUpperBody(s_SubCharacter* player, s_PlayerExtra* extra, bool freshAim)
 {
-    static e_PcGunState s_state    = PcGun_Aim;
-    static s32          s_stuckTmr = 0;
+    static e_PcGunState s_state        = PcGun_Aim;
+    static s32          s_stuckTmr     = 0;
+    static bool         s_prevFireHeld = false;
+    static s32          s_refireCd     = 0;
 
     u8  recoilSt  = (u8)(g_Player_EquippedWeaponInfo.animAttackHold | 1); /* Unk30 active */
     s16 recoilBeg = HARRY_BASE_ANIM_INFOS[recoilSt].startKeyframeIdx;
     s16 recoilEnd = HARRY_BASE_ANIM_INFOS[recoilSt].endKeyframeIdx;
 
     bool fireHeld  = g_Player_IsShooting != 0;
+    /* Semi-auto: fire only on the trigger's rising edge (must release between
+     * shots). Holding the trigger used to auto-refire once per recoil cycle —
+     * at high FPS the recoil cycles fast, so a single controller trigger pull
+     * (held a touch longer than a keyboard tap) loosed 2-3 rounds. */
+    bool fireEdge  = fireHeld && !s_prevFireHeld && s_refireCd == 0;
     bool reloadReq = PC_PlayerManualReloadRequested();
     s32  ammo      = g_SysWork.playerCombat.currentWeaponAmmo;
     s32  reserve   = g_SysWork.playerCombat.totalWeaponAmmo;
 
-    if (freshAim) { s_state = PcGun_Aim; s_stuckTmr = 0; }
+    if (freshAim) { s_state = PcGun_Aim; s_stuckTmr = 0; s_prevFireHeld = fireHeld; s_refireCd = 0; }
+    if (s_refireCd > 0) s_refireCd--;
+    s_prevFireHeld = fireHeld;
+
+    /* Keep Harry in the combat player-state so the free-aim camera-ray bullet
+     * override (Player_CombatUpdate) runs every frame. That override is gated on
+     * extra->state being None/Combat; the PSX fire path used to set Combat, but
+     * we bypass it, so without this the shot falls back to Harry's body facing
+     * (player->angleToTarget) and only hits enemies directly ahead. Clearing the
+     * auto-target keeps the bullet on the camera ray, not a stale lock. */
+    g_SysWork.playerWork.extra.state = PlayerState_Combat;
+    g_Player_TargetNpcIdx            = NO_VALUE;
 
     switch (s_state)
     {
@@ -3449,7 +3478,7 @@ static void Pc_FreeAimGunUpperBody(s_SubCharacter* player, s_PlayerExtra* extra,
             extra->model.anim.time        = Q12(holdKf);
             playerProps.flags &= ~PlayerFlag_Shooting;
 
-            if (reserve > 0 && (reloadReq || (fireHeld && ammo == 0)))
+            if (reserve > 0 && (reloadReq || (fireEdge && ammo == 0)))
             {
                 /* Begin reload: play the reload anim (blend->active track) from the
                  * proven per-weapon keyframes, firing locked out. */
@@ -3464,9 +3493,10 @@ static void Pc_FreeAimGunUpperBody(s_SubCharacter* player, s_PlayerExtra* extra,
                 break;
             }
 
-            if (fireHeld && ammo > 0)
+            if (fireEdge && ammo > 0)
             {
                 /* Fire: the existing (working) damage trigger + ammo + SFX. */
+                s_refireCd = PC_GUN_REFIRE_CD;
                 player->field_44.field_0 = 1;
                 if (g_SysWork.playerCombat.weaponAttack != WEAPON_ATTACK(EquippedWeaponId_HyperBlaster, AttackInputType_Tap))
                 {
@@ -4260,15 +4290,16 @@ bool Player_UpperBodyMainUpdate(s_SubCharacter* player, s_PlayerExtra* extra) //
             {
                 if (
 #ifdef SH_PC_PORT
-                    /* Skip the early field_6 transition during multi-tap so the
-                     * full swing-down anim plays. For knife: kf advances 596→611
-                     * but D_800C44F0[2].field_6=598 — without this gate the
-                     * transition fires only 2 kf into the multi-tap anim, leaving
-                     * Harry with the knife raised at the windup position and
-                     * never showing the actual strike. pcAttackDone (at kf>=611)
-                     * still triggers the transition at the natural anim end. */
-                    (g_Player_MeleeAttackType != 2 && extra->model.anim.keyframeIdx == D_800C44F0[D_800AF220].field_6)
-                    || pcAttackDone
+                    /* Rely SOLELY on pcAttackDone (derived from the verified-good
+                     * HARRY_BASE_ANIM_INFOS endKeyframeIdx). The old
+                     * `keyframeIdx == D_800C44F0[..].field_6` term read the corrupt
+                     * PC-reconstructed D_800294F4 table: e.g. for the SteelPipe it
+                     * yields 597, which lands INSIDE the 584->613 swing and cut the
+                     * swing at waist height. The outer guard only admits the active
+                     * swing statuses (Unk29/Unk30/HandgunRecoil = 59/61/63), all
+                     * covered by pcAttackDone, which fires at each swing's true end
+                     * keyframe — full arc to the ground, FPS-independent. */
+                    pcAttackDone
 #else
                     extra->model.anim.keyframeIdx == D_800C44F0[D_800AF220].field_6
 #endif
@@ -5076,6 +5107,40 @@ bool Player_UpperBodyMainUpdate(s_SubCharacter* player, s_PlayerExtra* extra) //
                         player->field_44.field_0 = 1;
                     }
                 }
+#ifdef SH_PC_PORT
+                /* Same high-FPS keyframe-skip guard as the non-gas else path below:
+                 * at uncapped FPS the gas-weapon aim-start anim (HandgunAim fueling,
+                 * or Unk33 when already fuelled) steps OVER D_800C44F0[..].field_6 in
+                 * one frame, so the == checks never matched and the chainsaw / rock
+                 * drill got stuck in AimStart — the pose was held but Aim was never
+                 * reached, so they never fired. Detect "reached or passed" the active
+                 * anim's end keyframe. func_8004C564(,1) only on the HandgunAim
+                 * (fuelling) completion, matching the == D_800C44F0[0] case above. */
+                else if (extra->model.anim.status < 76)
+                {
+                    const s_AnimInfo* info = &HARRY_BASE_ANIM_INFOS[extra->model.anim.status];
+                    bool isBackward = !info->hasVariableDuration && info->duration.constant < 0;
+                    s16 doneKf = isBackward ? info->startKeyframeIdx : info->endKeyframeIdx;
+                    bool reached = isBackward ? (extra->model.anim.keyframeIdx <= doneKf)
+                                              : (extra->model.anim.keyframeIdx >= doneKf);
+                    if (doneKf > 0 && reached)
+                    {
+                        if (ANIM_STATUS_IDX_GET(extra->model.anim.status) == HarryAnim_HandgunAim)
+                        {
+                            func_8004C564(g_SysWork.playerCombat.weaponAttack, 1);
+                        }
+
+                        g_SysWork.playerWork.extra.upperBodyState = PlayerUpperBodyState_Aim;
+                        extra->model.controlState = extra->model.stateStep = 0;
+                        playerProps.flags &= ~PlayerFlag_Unk2;
+
+                        if (playerProps.gasWeaponPowerTimer != Q12(0.0f))
+                        {
+                            player->field_44.field_0 = 1;
+                        }
+                    }
+                }
+#endif
             }
             else
             {
@@ -9542,6 +9607,19 @@ void Player_CombatUpdate(s_SubCharacter* player, GsCOORDINATE2* coord) // 0x8007
                     _P.vx = g_TpsCamPos.vx + _off.vx;
                     _P.vy = g_TpsCamPos.vy + _off.vy;
                     _P.vz = g_TpsCamPos.vz + _off.vz;
+                }
+                /* Aim assist: if the reticle is over (mouse) or near (controller
+                 * auto-aim) an enemy's body, redirect the aim point onto the
+                 * enemy's axis so the bullet hits anywhere on the body, not just
+                 * the narrow collision strip the raw screen-center ray needs. */
+                if (g_PcConfig.aimAssist)
+                {
+                    extern s32 Pc_AimAssistFind(const VECTOR3*, const VECTOR3*, s32, VECTOR3*);
+                    VECTOR3 _aim;
+                    if (Pc_AimAssistFind(&g_TpsCamPos, &g_TpsCamFwd, Q12(60.0f), &_aim) != NO_VALUE)
+                    {
+                        _P = _aim;
+                    }
                 }
                 /* Yaw: heading from the hand to the aim point (matches the engine's
                  * ratan2(dx,dz) heading convention used just above). */

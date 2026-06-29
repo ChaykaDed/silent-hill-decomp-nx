@@ -157,8 +157,66 @@ void Gfx_2dEffectsDraw(void) // 0x800550D0
 
     ot = &g_OrderingTable0[g_ActiveBufferIdx];
 
+#ifdef SH_PC_PORT
+    /* Per-pixel flashlight (PC port): once per frame, push the world point light
+     * into VIEW space for the fragment-shader cone. GsWSMATRIX is the world->view
+     * matrix (Q8 t, Q12 rotation); transforming the Q8 world light position
+     * through it yields the same Q8 camera-space units the GTE RTPS captures into
+     * GrVertex.vsx/vsy/vsz (the fog code transforms world positions identically,
+     * see bodyprog_bone_80044F14.c). Off path: g_PsyX_FlashlightActive stays 0
+     * (or the master flag is 0), so the shader cone is fully inert. */
+    {
+        extern int   g_PsyX_UsePerPixelFlashlight;
+        extern int   g_PsyX_FlashlightActive;
+        extern float g_PsyX_FlashlightPos[3];
+        extern float g_PsyX_FlashlightDir[3];
+
+        /* Gate on Harry's actual flashlight state (== what Game_FlashlightIsOn
+         * returns). field_0==1 is only the room's dynamic-light mode (on even
+         * with the flashlight stowed, so the cone got stuck on) and field_2 is
+         * only the per-room glow-halo enable (0 in rooms like map3_s05 even with
+         * the flashlight on, so the cone never showed) — neither tracks the
+         * flashlight itself. field_60 (light pos) is refreshed every frame by
+         * Gfx_FlashlightUpdate regardless, so it's valid whenever this is true. */
+        if (g_PsyX_UsePerPixelFlashlight && g_SysWork.field_2388.isFlashlightOn_15)
+        {
+            s32 lx = Q12_TO_Q8(g_WorldEnvWork.field_60.vx);
+            s32 ly = Q12_TO_Q8(g_WorldEnvWork.field_60.vy);
+            s32 lz = Q12_TO_Q8(g_WorldEnvWork.field_60.vz);
+
+            s32 vx = (s32)(((s64)GsWSMATRIX.m[0][0] * lx + (s64)GsWSMATRIX.m[0][1] * ly + (s64)GsWSMATRIX.m[0][2] * lz) >> 12) + GsWSMATRIX.t[0];
+            s32 vy = (s32)(((s64)GsWSMATRIX.m[1][0] * lx + (s64)GsWSMATRIX.m[1][1] * ly + (s64)GsWSMATRIX.m[1][2] * lz) >> 12) + GsWSMATRIX.t[1];
+            s32 vz = (s32)(((s64)GsWSMATRIX.m[2][0] * lx + (s64)GsWSMATRIX.m[2][1] * ly + (s64)GsWSMATRIX.m[2][2] * lz) >> 12) + GsWSMATRIX.t[2];
+
+            g_PsyX_FlashlightPos[0] = (float)vx;
+            g_PsyX_FlashlightPos[1] = (float)vy;
+            g_PsyX_FlashlightPos[2] = (float)vz;
+
+            /* Beam axis = camera forward (+Z) in view space; the cone follows the
+             * camera like a held flashlight. (N.L / field_58 direction deferred.) */
+            g_PsyX_FlashlightDir[0] = 0.0f;
+            g_PsyX_FlashlightDir[1] = 0.0f;
+            g_PsyX_FlashlightDir[2] = 1.0f;
+
+            g_PsyX_FlashlightActive = 1;
+        }
+        else
+        {
+            g_PsyX_FlashlightActive = 0;
+        }
+    }
+#endif
+
     if (g_WorldEnvWork.field_2 != 0)
     {
+#ifdef SH_PC_PORT
+        /* Skip this PSX glow-polygon fan only when the per-pixel cone is actually
+         * lighting (flashlight on + feature on == g_PsyX_FlashlightActive); the
+         * cone replaces it and drawing both double-lights into blown-out
+         * highlights. With the cone inactive, draw the halo as the game intends. */
+        extern int g_PsyX_FlashlightActive;
+        if (!g_PsyX_FlashlightActive)
+#endif
         func_80041074(ot, g_WorldEnvWork.field_54, &g_WorldEnvWork.field_58, &g_WorldEnvWork.field_60);
     }
 
@@ -335,6 +393,19 @@ void func_80055330(u8 arg0, s32 arg1, u8 arg2, s32 tintR, s32 tintG, s32 tintB, 
             g_WorldEnvWork.field_24 = (s16)((s32)g_WorldEnvWork.field_24 * g_PcWorldLightColorR / 255);
             g_WorldEnvWork.field_25 = (s16)((s32)g_WorldEnvWork.field_25 * g_PcWorldLightColorG / 255);
             g_WorldEnvWork.field_26 = (s16)((s32)g_WorldEnvWork.field_26 * g_PcWorldLightColorB / 255);
+        }
+    }
+
+    /* When the per-pixel flashlight cone provides the flashlight, neutralize the
+     * per-vertex directional flashlight (field_2C is the light-color matrix loaded
+     * via SetColorMatrix) so the cone REPLACES it instead of stacking on top — that
+     * double-light was the blown-out wash. Flat ambient (field_24..26 / worldTint)
+     * stays, so the room keeps its base darkness and the cone reads as the beam. */
+    {
+        extern int g_PsyX_UsePerPixelFlashlight;
+        if (g_PsyX_UsePerPixelFlashlight && g_SysWork.field_2388.isFlashlightOn_15)
+        {
+            memset(&g_WorldEnvWork.field_2C, 0, sizeof(g_WorldEnvWork.field_2C));
         }
     }
 #endif
@@ -1205,6 +1276,36 @@ bool Lm_IsTextureLoaded(s_LmHeader* lmHdr) // 0x80056888
     return true;
 }
 
+#ifdef SH_PC_PORT
+/* Set while the interior chunk-texture pool is being (re)synced
+ * (Ipd_ChunkMaterialsApply steal loop). Scopes the NULL-texture untexture below
+ * to that path only, so other maps/draws are unaffected. */
+int g_PcInteriorMatSync = 0;
+
+/* Force every prim bound to material `matIdx` to the untextured sentinel (32,
+ * same value the no-material case uses). A material whose VRAM page was stolen
+ * for a nearer chunk has texture==NULL but its field_E still points at that
+ * page, which now holds another chunk's 4bpp texture+CLUT — drawing it sampled
+ * the wrong page (the interior "rainbow"). Rendering it flat instead matches
+ * vanilla's out-of-pool chunks (which simply go untextured/black). */
+static void Model_MaterialUntexture(s_ModelHeader* modelHdr, s32 matIdx)
+{
+    s_MeshHeader* curMeshHdr;
+    s_Primitive*  curPrim;
+
+    for (curMeshHdr = modelHdr->meshHdrs; curMeshHdr < &modelHdr->meshHdrs[modelHdr->meshCount]; curMeshHdr++)
+    {
+        for (curPrim = curMeshHdr->primitives; curPrim < &curMeshHdr->primitives[curMeshHdr->primitiveCount]; curPrim++)
+        {
+            if (curPrim->field_6.bits.materialIdx == matIdx)
+            {
+                curPrim->field_6.bits.field_6_0 = 32;
+            }
+        }
+    }
+}
+#endif
+
 void Lm_MaterialFlagsApply(s_LmHeader* lmHdr) // 0x80056954
 {
     s32         i;
@@ -1214,6 +1315,19 @@ void Lm_MaterialFlagsApply(s_LmHeader* lmHdr) // 0x80056954
 
     for (i = 0, curMat = lmHdr->materials; i < lmHdr->materialCount; i++, curMat++)
     {
+#ifdef SH_PC_PORT
+        if (g_PcInteriorMatSync && curMat->texture == NULL)
+        {
+            for (j = 0; j < lmHdr->modelCount; j++)
+            {
+                if (lmHdr->magic == LM_HEADER_MAGIC)
+                {
+                    Model_MaterialUntexture(&lmHdr->modelHdrs[j], i);
+                }
+            }
+            continue;
+        }
+#endif
         matFlags = (curMat->field_E != curMat->field_F) ? MaterialFlag_0 : MaterialFlag_None;
 
         if (curMat->field_10 != curMat->field_12)

@@ -38,6 +38,10 @@ typedef struct {
     int menuPillarbox;   /* 1 = pillarbox 2D screens (menus/load) with 4:3 black bars instead of stretching to fill (config key: menu_pillarbox) */
     int allowLooseFiles; /* 1 = scan gamedata/load/{folder}/{name}.{ext} before CD read (texture mod support) */
     int usePgxp;         /* 1 = enable PGXP precision/perspective-correct textures (work-in-progress) */
+    int msaaSamples;     /* MSAA on the default framebuffer: 0 = off, 2/4/8 = sample count (config key: msaa) */
+    int postProcess;     /* full-screen post-process look: 0 = off, 1.. = built-in filter (config key: post_process) */
+    int tonemap;         /* tone-map operator: 0=off,1=Reinhard,2=ACES,3=Filmic (config key: tonemap) */
+    int perPixelFlashlight; /* 1 = per-pixel (fragment-shader) flashlight cone (config key: per_pixel_flashlight) */
     int enableDebugLog;  /* 1 = create + write SilentHill.log; 0 = no log file, SH_DBG no-op (config key: enable_debug_log) */
     int allowDebugControls; /* 1 = enable dev/cheat keys (numpad, top-row digits, ~, kill-Harry, etc.); 0 = off (default) */
     int controllerMovement; /* 0 = analog stick, 1 = d-pad, 2 = both (default) */
@@ -51,6 +55,7 @@ typedef struct {
     int invertControllerY;  /* 1 = invert right-stick Y for TPS look (config key: invert_controller_y) */
     int tpsAimZoom;         /* 1 = zoom the TPS/OTS camera in while aiming/attacking (config key: tps_aim_zoom) */
     int crosshair;          /* 1 = draw a center crosshair while aiming in TPS/OTS (config key: crosshair) */
+    int aimAssist;          /* 1 = OTS/TPS free-aim aim assist (mouse body-coverage + controller auto-aim) (config key: aim_assist) */
 
     /* Two control schemes, selected per-frame at runtime by camera mode and
      * applied via Pc_ApplyActiveControlScheme (main_pc.c). classic = default

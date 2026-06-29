@@ -133,6 +133,10 @@ s32 g_TpsCamPitch = 0;           /* TPS orbit pitch (Q12) */
  * reticle == camera forward). Read by Player_CombatUpdate. */
 VECTOR3 g_TpsCamPos = { 0, 0, 0 };
 VECTOR3 g_TpsCamFwd = { 0, 0, Q12(1.0f) };
+/* Which device last drove the aim/look: 0 = mouse, 1 = controller. Sticky (holds
+ * the last device while look input is momentarily idle). Read by Pc_AimAssistFind
+ * to pick a mouse-light vs controller-strong (auto-aim) assist window. */
+int g_PcAimDevice = 0;
 int g_SH_PostFireTrace = 0;      /* Frames remaining of verbose post-fire main-loop tracing */
 int g_SH_AlwaysMlTrace = 0;      /* 1 = unconditional ML_TRACE every frame; flip to 0 once silent crashes are diagnosed */
 int g_DebugUnlockFps = 0;        /* 0 = fps_cap from config, 1 = uncapped (debug toggle) */
@@ -263,6 +267,19 @@ static void Pc_TpsCamera_Apply(void)
             s32 sPitch = TIMESTEP_SCALE_30_FPS(g_DeltaTime, (ry * TP_STICK_PITCH) >> 7);
             g_TpsCamYaw   += sYaw;
             g_TpsCamPitch += g_PcConfig.invertControllerY ? sPitch : -sPitch;
+        }
+
+        /* Sticky aim-device detection for aim-assist: mouse motion -> mouse;
+         * else any stick deflection (right = look, left = move) -> controller. */
+        {
+            s32 lx = (s32)g_Controller0->analogController.leftX - 128;
+            s32 ly = (s32)g_Controller0->analogController.leftY - 128;
+            if (mdx != 0 || mdy != 0)
+                g_PcAimDevice = 0;
+            else if (rx != 0 || ry != 0 ||
+                     lx > TP_STICK_DEADZONE || lx < -TP_STICK_DEADZONE ||
+                     ly > TP_STICK_DEADZONE || ly < -TP_STICK_DEADZONE)
+                g_PcAimDevice = 1;
         }
 
         g_TpsCamYaw = Q12_ANGLE_NORM_U(g_TpsCamYaw + Q12_ANGLE(360.0f));
@@ -1681,23 +1698,15 @@ void MainLoop(void) // 0x80032EE0
              * teleporting Harry forward. g_DeltaTimeRaw (vCountCopy) is left raw
              * for the wall-clock accumulators / cutscene timers.
              *
-             * EXCEPTION — cutscenes: Harry is DMS/script-driven during a cutscene
-             * (no moveSpeed*g_DeltaTime collision sweep), so the wall-fix is moot,
-             * BUT this cap also throttled the cutscene VISUAL clock: character
-             * animation (Anim_TimestepGet) and the DMS timeline (Event_Cutscene-
-             * TimerAdvance) both advance on g_DeltaTime, while the XA voice + the
-             * subtitle/event timers advance on the uncapped g_DeltaTimeRaw. On any
-             * cutscene frame slower than 30fps (heavy late-game scenes) the visuals
-             * advanced up to ~33% slower than real time while the voice ran at real
-             * time, so the on-screen scene drifted progressively behind the spoken
-             * dialog (~10s by the end of a long scene). Skip the cap during
-             * cutscenes so the visual timeline tracks real time (= the audio). The
-             * 15fps floor (H_BLANKS_PER_FRAME_MIN, above) still bounds the step. */
-            if (!((g_SysWork.sysFlags & SysFlag_CutsceneActive) ||
-                  g_SysWork.cutsceneBorderState != CutsceneBorderState_None))
-            {
-                vCount = MIN(vCount, H_BLANKS_PER_SECOND / 30);
-            }
+             * NOTE: a previous cutscene-desync fix skipped this cap during
+             * cutscenes (so the visual clock tracked the uncapped audio). That
+             * left cutscene timing frame-rate dependent — DMS/animation steps
+             * advanced on a per-frame dt that could grow to the 15fps floor on
+             * heavy scenes, skipping keyframes/steps, so cutscenes only played
+             * correctly near a single frame rate (~50fps). Reverted per user
+             * request: cap the cutscene step like normal gameplay so cutscenes
+             * behave the same across frame rates as they did before. */
+            vCount = MIN(vCount, H_BLANKS_PER_SECOND / 30);
 #endif
         }
 
