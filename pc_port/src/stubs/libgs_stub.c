@@ -231,7 +231,11 @@ void GsDrawOt(GsOT *ot)
         g_currentOTBucketCount = 1 << ot->length;
         PsyX_ClearGteDepthTable();
 
+#ifdef RENDERER_OGLES
+        glClearDepthf(1.0f);
+#else
         glClearDepth(1.0f);
+#endif
         glClear(GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
 #endif
         DrawOTag((u_long*)ot->tag);

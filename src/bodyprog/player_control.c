@@ -3420,7 +3420,7 @@ void Player_UpperBodyStateUpdate(s_PlayerExtra* extra, e_PlayerUpperBodyState up
  * (Player_Update) holds the AIM pose. Damage / ammo / SFX reuse the existing
  * (working) dispatch verbatim. Completion is range-based (>=) plus a safety cap
  * so frame pacing can never strand a state. */
-typedef enum { PcGun_Aim = 0, PcGun_Fire, PcGun_Reload } e_PcGunState;
+typedef enum { PcGun_Aim = 0, PcGun_Fire, PcGun_Reload } e_aimPtcGunState;
 
 /* Frames a new shot is locked out after firing — debounces analog-trigger
  * threshold jitter (a single controller pull crossing the digital threshold
@@ -3431,7 +3431,7 @@ typedef enum { PcGun_Aim = 0, PcGun_Fire, PcGun_Reload } e_PcGunState;
 
 static void Pc_FreeAimGunUpperBody(s_SubCharacter* player, s_PlayerExtra* extra, bool freshAim)
 {
-    static e_PcGunState s_state        = PcGun_Aim;
+    static e_aimPtcGunState s_state        = PcGun_Aim;
     static s32          s_stuckTmr     = 0;
     static bool         s_prevFireHeld = false;
     static s32          s_refireCd     = 0;
@@ -3652,9 +3652,9 @@ void Player_UpperBodyUpdate(s_SubCharacter* player, s_PlayerExtra* extra) // 0x8
  * because it entered AimWalk from the move state). The "only one facing"
  * symptom was the combat branch having a second keyframe to match. */
 #ifdef SH_PC_PORT
-#define SH_AIM_KF_REACHED_P(kf) (player->model.anim.keyframeIdx >= (kf))
+#define SH_AIM_KF_REACHED_aimPt(kf) (player->model.anim.keyframeIdx >= (kf))
 #else
-#define SH_AIM_KF_REACHED_P(kf) (player->model.anim.keyframeIdx == (kf))
+#define SH_AIM_KF_REACHED_aimPt(kf) (player->model.anim.keyframeIdx == (kf))
 #endif
 
 bool Player_UpperBodyMainUpdate(s_SubCharacter* player, s_PlayerExtra* extra) // 0x80075504
@@ -4239,7 +4239,7 @@ bool Player_UpperBodyMainUpdate(s_SubCharacter* player, s_PlayerExtra* extra) //
         bool pcAttackDone = false;
         {
             u8 st = extra->model.anim.status;
-            /* Anim_PlaybackOnce transitions status AND sets kf=endKf atomically.
+            /* Anim_aimPtlaybackOnce transitions status AND sets kf=endKf atomically.
              * On the frame the fire anim (73=Unk36 true) ends, we see the blend
              * target status (60=Unk30 false) but kf is still at the fire anim's
              * end frame. Remap blend-phase statuses to their source fire anim so
@@ -4311,7 +4311,7 @@ bool Player_UpperBodyMainUpdate(s_SubCharacter* player, s_PlayerExtra* extra) //
                      * D_800C44F0[0].field_6 (which for melee weapons is
                      * outside the HandgunAim range — e.g. knife wants
                      * kf=575 but field_6=587). Setting kf out of range
-                     * shows a 1-frame snap before Anim_PlaybackOnce
+                     * shows a 1-frame snap before Anim_aimPtlaybackOnce
                      * clamps it; the snap looks like the swing got cut
                      * off mid-way during multi-tap combo. */
                     extra->model.anim.keyframeIdx = HARRY_BASE_ANIM_INFOS[ANIM_STATUS(HarryAnim_HandgunAim, true)].endKeyframeIdx;
@@ -5522,7 +5522,7 @@ bool Player_UpperBodyMainUpdate(s_SubCharacter* player, s_PlayerExtra* extra) //
                 /* PSX sets status=HandgunAim(true) + kf=588 and renders the
                  * .ANM directly at kf=588 (the post-reload settled pose).
                  * On PC, HandgunAim active's kf range is 570-579 — kf=588 is
-                 * out of range and Anim_PlaybackOnce clamps it to 579 next
+                 * out of range and Anim_aimPtlaybackOnce clamps it to 579 next
                  * frame, jumping the visual back to the gun-close-to-body
                  * pose and making the reload look cut short.
                  *
@@ -6358,8 +6358,8 @@ void Player_LowerBodyUpdate(s_SubCharacter* player, s_PlayerExtra* extra) // 0x8
                     ANIM_STATUS_IS_ACTIVE(extra->model.anim.status))
                 {
                     if (player->model.anim.status >= ANIM_STATUS(HarryAnim_Unk29, false) ||
-                        SH_AIM_KF_REACHED_P(D_800C44F0[0].field_6) ||
-                        SH_AIM_KF_REACHED_P(D_800C44F0[5].field_6))
+                        SH_AIM_KF_REACHED_aimPt(D_800C44F0[0].field_6) ||
+                        SH_AIM_KF_REACHED_aimPt(D_800C44F0[5].field_6))
                     {
                         if (g_Player_IsMovingForward)
                         {
@@ -6382,13 +6382,13 @@ void Player_LowerBodyUpdate(s_SubCharacter* player, s_PlayerExtra* extra) // 0x8
                 {
                     if ((aimState == 0 && playerProps.moveSpeed == Q12(0.0f))||
                         player->model.anim.status >= ANIM_STATUS(HarryAnim_Unk29, false) ||
-                        SH_AIM_KF_REACHED_P(D_800C44F0[0].field_6) ||
+                        SH_AIM_KF_REACHED_aimPt(D_800C44F0[0].field_6) ||
                         /* PC: aim-at-nothing reaches its aim-ready pose on the [5]
                          * keyframe, not [0]; without this the idle-aim -> aim-walk
                          * transition never fired when not locked onto an enemy, so
                          * you could not start walking after aiming from a standstill.
                          * Mirrors the locked-on (Combat) branch which already checks [5]. */
-                        SH_AIM_KF_REACHED_P(D_800C44F0[5].field_6))
+                        SH_AIM_KF_REACHED_aimPt(D_800C44F0[5].field_6))
                     {
                         if (g_Player_IsMovingForward)
                         {
@@ -8008,7 +8008,7 @@ void Player_LowerBodyUpdate(s_SubCharacter* player, s_PlayerExtra* extra) // 0x8
                         player->model.stateStep++;
                     }
 
-                    if (SH_AIM_KF_REACHED_P(D_800C44F0[0].field_6) || SH_AIM_KF_REACHED_P(D_800C44F0[5].field_6))
+                    if (SH_AIM_KF_REACHED_aimPt(D_800C44F0[0].field_6) || SH_AIM_KF_REACHED_aimPt(D_800C44F0[5].field_6))
                     {
                         player->model.anim.status      = extra->model.anim.status;
                         player->model.anim.keyframeIdx = extra->model.anim.keyframeIdx;
@@ -8083,7 +8083,7 @@ void Player_LowerBodyUpdate(s_SubCharacter* player, s_PlayerExtra* extra) // 0x8
                  WEAPON_ATTACK_ID_GET(g_SysWork.playerCombat.weaponAttack) != EquippedWeaponId_Katana))
             {
                 if (ANIM_STATUS_IS_ACTIVE(player->model.anim.status) && ANIM_STATUS_IS_ACTIVE(extra->model.anim.status) &&
-                    (player->model.anim.status >= ANIM_STATUS(HarryAnim_Unk29, false) || SH_AIM_KF_REACHED_P(D_800C44F0[0].field_6)))
+                    (player->model.anim.status >= ANIM_STATUS(HarryAnim_Unk29, false) || SH_AIM_KF_REACHED_aimPt(D_800C44F0[0].field_6)))
                 {
                     if (!g_Player_IsMovingForward)
                     {
@@ -8131,7 +8131,7 @@ void Player_LowerBodyUpdate(s_SubCharacter* player, s_PlayerExtra* extra) // 0x8
             }
 
             if (ANIM_STATUS_IS_ACTIVE(player->model.anim.status) && ANIM_STATUS_IS_ACTIVE(extra->model.anim.status) &&
-                (player->model.anim.status >= ANIM_STATUS(HarryAnim_Unk29, false) || SH_AIM_KF_REACHED_P(D_800C44F0[0].field_6)))
+                (player->model.anim.status >= ANIM_STATUS(HarryAnim_Unk29, false) || SH_AIM_KF_REACHED_aimPt(D_800C44F0[0].field_6)))
             {
                 if (g_Player_IsMovingForward)
                 {
@@ -9590,7 +9590,7 @@ void Player_CombatUpdate(s_SubCharacter* player, GsCOORDINATE2* coord) // 0x8007
                 extern VECTOR3 g_TpsCamFwd;
                 extern s32     g_TpsCamPitch;
                 s_RayTrace _tr;
-                VECTOR3    _off, _P;
+                VECTOR3    _off, _aimPt;
                 VECTOR3*   _hand = &playerCombat.attackPosition;
                 s32        _pitch;
                 #define SH_AIM_RANGE Q12(60.0f)
@@ -9600,13 +9600,13 @@ void Player_CombatUpdate(s_SubCharacter* player, GsCOORDINATE2* coord) // 0x8007
                 #undef SH_AIM_RANGE
                 if (Ray_CharaTraceQuery(&_tr, &g_TpsCamPos, &_off, player))
                 {
-                    _P = _tr.target;
+                    _aimPt = _tr.target;
                 }
                 else
                 {
-                    _P.vx = g_TpsCamPos.vx + _off.vx;
-                    _P.vy = g_TpsCamPos.vy + _off.vy;
-                    _P.vz = g_TpsCamPos.vz + _off.vz;
+                    _aimPt.vx = g_TpsCamPos.vx + _off.vx;
+                    _aimPt.vy = g_TpsCamPos.vy + _off.vy;
+                    _aimPt.vz = g_TpsCamPos.vz + _off.vz;
                 }
                 /* Aim assist: if the reticle is over (mouse) or near (controller
                  * auto-aim) an enemy's body, redirect the aim point onto the
@@ -9618,12 +9618,12 @@ void Player_CombatUpdate(s_SubCharacter* player, GsCOORDINATE2* coord) // 0x8007
                     VECTOR3 _aim;
                     if (Pc_AimAssistFind(&g_TpsCamPos, &g_TpsCamFwd, Q12(60.0f), &_aim) != NO_VALUE)
                     {
-                        _P = _aim;
+                        _aimPt = _aim;
                     }
                 }
                 /* Yaw: heading from the hand to the aim point (matches the engine's
                  * ratan2(dx,dz) heading convention used just above). */
-                unkRot.vx = ratan2(_P.vx - _hand->vx, _P.vz - _hand->vz);
+                unkRot.vx = ratan2(_aimPt.vx - _hand->vx, _aimPt.vz - _hand->vz);
                 /* Pitch: aim from the HAND to the camera-ray hit point P so the
                  * bullet (and muzzle particle) actually go THROUGH the reticle. The
                  * camera sits above/behind the hand, so using the camera's own pitch
@@ -9633,9 +9633,9 @@ void Player_CombatUpdate(s_SubCharacter* player, GsCOORDINATE2* coord) // 0x8007
                  * rotates the arms, only the torso leans. Convention: 90 = level,
                  * <90 = down, >90 = up; horiz>0 keeps ratan2 in the 0..180 range. */
                 {
-                    s32 _dx6   = (_P.vx - _hand->vx) >> 6;
-                    s32 _dz6   = (_P.vz - _hand->vz) >> 6;
-                    s32 _dy6   = (_P.vy - _hand->vy) >> 6;
+                    s32 _dx6   = (_aimPt.vx - _hand->vx) >> 6;
+                    s32 _dz6   = (_aimPt.vz - _hand->vz) >> 6;
+                    s32 _dy6   = (_aimPt.vy - _hand->vy) >> 6;
                     s32 _horiz = SquareRoot0((u32)(SQUARE(_dx6) + SQUARE(_dz6)));
                     _pitch = (_horiz != 0 || _dy6 != 0) ? ratan2(_horiz, _dy6)
                                                         : Q12_ANGLE(90.0f);

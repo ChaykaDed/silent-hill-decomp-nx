@@ -180,6 +180,11 @@ list(FILTER PC_PORT_SOURCES EXCLUDE REGEX "map_overlay_stub\\.c$")
 # PC PORT: drop the combat_target.c aiming shim; the real decompiled func_8005CD38
 # (src/bodyprog/bodyprog_combat_8005BF38.c) now provides target selection.
 list(FILTER PC_PORT_SOURCES EXCLUDE REGEX "combat_target\\.c$")
+# Switch: drop dll_loader.c (uses dlopen/dlfcn.h which doesn't exist on bare-metal Switch)
+if(SH_SWITCH)
+    list(FILTER PC_PORT_SOURCES EXCLUDE REGEX "dll_loader\\.c$")
+    list(FILTER PC_PORT_SOURCES EXCLUDE REGEX "map_overlay_loader\\.c$")
+endif()
 
 # Windows: compile the .rc so the exe carries an application icon (Explorer,
 # taskbar, title bar). windres resolves the ICON path relative to the .rc dir.
@@ -346,14 +351,27 @@ else()
 endif()
 
 if(SH_SWITCH)
-    # Switch: Link against libnx
-    target_link_libraries(${EXECUTABLE_NAME} PRIVATE nx)
+    # SDL2 and OpenAL: linked directly here (psycross_static uses PRIVATE so
+    # these don't propagate). Must precede libnx because SDL2 references libnx.
+    if(SDL2_LIBRARY)
+        target_link_libraries(${EXECUTABLE_NAME} PRIVATE ${SDL2_LIBRARY})
+    endif()
     if(OPENGL_glesv2_LIBRARY AND OPENGL_egl_LIBRARY)
         target_link_libraries(${EXECUTABLE_NAME} PRIVATE ${OPENGL_glesv2_LIBRARY} ${OPENGL_egl_LIBRARY})
+    endif()
+    # Mesa EGL on Switch depends on libdrm_nouveau (nouveau kernel driver) and
+    # libglapi (GL API dispatch).  GNU ld needs these AFTER EGL.
+    if(DRM_NOUVEAU_LIBRARY)
+        target_link_libraries(${EXECUTABLE_NAME} PRIVATE ${DRM_NOUVEAU_LIBRARY})
+    endif()
+    if(GLAPI_LIBRARY)
+        target_link_libraries(${EXECUTABLE_NAME} PRIVATE ${GLAPI_LIBRARY})
     endif()
     if(OPENAL_LIBRARY)
         target_link_libraries(${EXECUTABLE_NAME} PRIVATE ${OPENAL_LIBRARY})
     endif()
+    # libnx must appear after all other libraries (SDL2 references libnx symbols)
+    target_link_libraries(${EXECUTABLE_NAME} PRIVATE nx)
 elseif(WIN32)
     target_link_libraries(${EXECUTABLE_NAME} PRIVATE opengl32 winmm m)
 elseif(UNIX)

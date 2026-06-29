@@ -33,10 +33,11 @@ set(CMAKE_RANLIB ${DEVKITARM}/bin/aarch64-none-elf-ranlib CACHE PATH "Ranlib")
 # Compiler flags for ARM64 (Cortex-A57 in Switch)
 set(CMAKE_C_FLAGS "-march=armv8-a -mtune=cortex-a57 -mtp=soft -fPIC -ffunction-sections -fdata-sections" CACHE STRING "C flags")
 set(CMAKE_CXX_FLAGS "${CMAKE_C_FLAGS}" CACHE STRING "C++ flags")
-set(CMAKE_EXE_LINKER_FLAGS "-specs=${LIBNX}/switch.specs -Wl,--gc-sections" CACHE STRING "Linker flags")
+set(CMAKE_EXE_LINKER_FLAGS "-specs=${LIBNX}/switch.specs -Wl,--gc-sections -L${LIBNX}/lib -L${DEVKITPRO}/portlibs/switch/lib" CACHE STRING "Linker flags")
 
 # Add include directories globally
 include_directories(${DEVKITPRO}/portlibs/switch/include)
+include_directories(${DEVKITPRO}/portlibs/switch/include/SDL2)
 
 # Find packages configuration
 set(CMAKE_FIND_ROOT_PATH ${DEVKITPRO} ${LIBNX})
@@ -54,10 +55,15 @@ set(OPENAL_LIBRARY ${DEVKITPRO}/portlibs/switch/lib/libopenal.a CACHE FILEPATH "
 set(JPEG_INCLUDE_DIR ${DEVKITPRO}/portlibs/switch/include CACHE PATH "libjpeg include")
 set(JPEG_LIBRARY ${DEVKITPRO}/portlibs/switch/lib/libjpeg.a CACHE FILEPATH "libjpeg library")
 
-# OpenGL ES for Switch
+# OpenGL ES for Switch (Mesa)
 set(OPENGL_INCLUDE_DIR ${DEVKITPRO}/portlibs/switch/include CACHE PATH "OpenGL ES include")
 set(OPENGL_egl_LIBRARY ${DEVKITPRO}/portlibs/switch/lib/libEGL.a CACHE FILEPATH "EGL library")
 set(OPENGL_glesv2_LIBRARY ${DEVKITPRO}/portlibs/switch/lib/libGLESv2.a CACHE FILEPATH "GLESv2 library")
+set(DRM_NOUVEAU_LIBRARY ${DEVKITPRO}/portlibs/switch/lib/libdrm_nouveau.a CACHE FILEPATH "DRM nouveau library")
+set(GLAPI_LIBRARY ${DEVKITPRO}/portlibs/switch/lib/libglapi.a CACHE FILEPATH "GLAPI library")
+
+# Add libnx library search path (the nx library is referenced as -lnx)
+link_directories(${LIBNX}/lib)
 
 # Platform-specific definitions
 add_compile_definitions(

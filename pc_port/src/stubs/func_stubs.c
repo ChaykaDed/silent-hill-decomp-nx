@@ -107,3 +107,5 @@ int Lzc(long val) {
     while (!(val & 0x80000000)) { count++; val <<= 1; }
     return count;
 }
+
+

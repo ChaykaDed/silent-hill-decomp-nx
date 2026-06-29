@@ -31,6 +31,16 @@ typedef unsigned int       q20_12; // Q20.12 fixed-point.
 typedef unsigned long long q52_12; // Q52.12 fixed-point.
 
 #ifndef __cplusplus
+    /* GCC 15+ (via devkitPro's newlib) includes <stdbool.h> from system
+     * headers before we get here.  It defines bool → _Bool, true → 1,
+     * false → 0.  Our decomp code uses `bool` both as a type and as a
+     * parameter name (e.g. func_800880F0(bool bool)), so undef the
+     * macro form and keep the original PSX enum typedef. */
+    #include <stdbool.h>
+    #undef bool
+    #undef true
+    #undef false
+    #define __bool_true_false_are_defined 1
     typedef enum { false, true } bool;
 #endif
 

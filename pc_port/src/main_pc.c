@@ -33,6 +33,12 @@
 
 #include <libgpu.h>
 #include <libgte.h>
+
+/* PC-port global config variables — referenced from dbg_overlay.c as extern */
+#if defined(__SWITCH__)
+int g_cfg_msaaSamples;
+int g_cfg_postProcess;
+#endif
 #include <libetc.h>
 #include <libspu.h>
 #include <libcd.h>
