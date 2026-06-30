@@ -68,6 +68,10 @@ case "$MODE" in
         cd "$BUILD_DIR"
         cmake --build . --config Release
         echo -e "${GREEN}✓ Build complete!${NC}"
+        # Embed icon if available
+        if [ -f "${SCRIPT_DIR}/SH1icon.png" ]; then
+            python3 "${SCRIPT_DIR}/embed_icon.py" "${BUILD_DIR}/SilentHillPC.nro" "${SCRIPT_DIR}/SH1icon.png"
+        fi
         echo -e "${GREEN}Output: ${BUILD_DIR}${NC}"
         ;;
 

@@ -24,6 +24,7 @@ ninja
 if %errorlevel% neq 0 exit /b %errorlevel%
 echo === NRO ===
 elf2nro SilentHillPC SilentHillPC.nro --nacp=SilentHillPC.nacp
+python3 ..\embed_icon.py SilentHillPC.nro ..\SH1icon.png
 echo === Done: %BUILD_DIR%\SilentHillPC.nro ===
 exit /b
 
