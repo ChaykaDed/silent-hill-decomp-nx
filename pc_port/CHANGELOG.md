@@ -1,14 +1,7 @@
 # Silent Hill PC Port — Changelog
 
 ## Switch-port-2026.06.29 -- 2026-06-29
-- Fixed null-function-pointer crash (PC=0x0) on GLES: replaced glad function-pointer dispatch (`gl=4.3` desktop) with native `GLES3/gl3.h` for Switch
-- `glClearDepthf` was never loaded because glad's `GLAD_GL_VERSION_4_1` stays false on GLES 3.0 (major=3)
-- Fixed `glClearDepth` → `glClearDepthf` in `libgs_stub.c` for GLES builds
-- Added `GL_LUMINANCE_ALPHA` define (removed from GLES 3.0 core)
-- Added missing global variable definitions: `g_PsyX_FlashlightActive`, `g_PsyX_FlashlightPos`, `g_PsyX_FlashlightDir`
-- Fixed rename-bug corruption in `player_control.c`: `_P`→`_aimPt` collision with `<ctype.h>`
-- Full clean link: 197/197 targets, 32 MB NRO, zero linker errors
-- Runtime: NRO boots in Ryujinx, creates GLES context, initializes audio, runs ~55s without crash
+- Switch port initial bringup: cross-compilation (devkitA64), native GLES3 headers, link cleanup
 
 ## beta-2026.06.29.2 -- 2026-06-29
 - This update is just a message- I forgot to mention PER PIXEL flashlight is still being worked on! It should be fixed next update!
