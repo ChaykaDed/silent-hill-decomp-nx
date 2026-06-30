@@ -263,11 +263,11 @@ static void PsyX_Sys_InitialiseInput()
 	 * shift keys mirror cleanly. */
 	g_cfg_keyboardMapping.kc_l1 = SDL_SCANCODE_A;            /* sidestep left */
 	g_cfg_keyboardMapping.kc_l2 = SDL_SCANCODE_RSHIFT;       /* view */
-	g_cfg_keyboardMapping.kc_l3 = SDL_SCANCODE_LEFTBRACKET;
+	g_cfg_keyboardMapping.kc_l3 = SDL_SCANCODE_UNKNOWN  /* [ reserved for effect-intensity control */;
 
 	g_cfg_keyboardMapping.kc_r1 = SDL_SCANCODE_D;            /* sidestep right */
 	g_cfg_keyboardMapping.kc_r2 = SDL_SCANCODE_LSHIFT;       /* aim */
-	g_cfg_keyboardMapping.kc_r3 = SDL_SCANCODE_RIGHTBRACKET;
+	g_cfg_keyboardMapping.kc_r3 = SDL_SCANCODE_UNKNOWN /* ] reserved for effect-intensity control */;
 
 	g_cfg_keyboardMapping.kc_dpad_up = SDL_SCANCODE_UP;
 	g_cfg_keyboardMapping.kc_dpad_down = SDL_SCANCODE_DOWN;
@@ -974,6 +974,14 @@ void PsyX_EndScene()
 	if (g_PsyX_PostCaptureHook)
 		g_PsyX_PostCaptureHook();
 
+	/* PC port: apply the selected full-screen post-process look (color grade,
+	 * CRT, scanlines, vignette, grain, sharpen, PSX downsample, ...) to the
+	 * fully composed frame just before presenting. No-op when off. */
+	{
+		extern void GR_PostProcess(void);
+		GR_PostProcess();
+	}
+
 	GR_SwapWindow();
 }
 
@@ -1046,10 +1054,9 @@ void PsyX_Sys_DoDebugKeys(int nKey, char down)
 			PsyX_TakeScreenshot();
 			break;
 #endif
-		case SDL_SCANCODE_F3:
-			g_cfg_bilinearFiltering ^= 1;
-			eprintwarn("filtering mode: %d\n", g_cfg_bilinearFiltering);
-			break;
+		/* F3 freed for the game-side tone-map cycle (dbg_overlay.c). The old
+		 * bilinear-filtering toggle here was redundant — filtering is set via the
+		 * launcher (psx_dither/Filtering option -> main_pc.c). */
 		/* F4 keyboard-controller-slot cycle removed — a stray tap moved keyboard +
 		 * mouse input off player 1, silently killing fire/aim (read as a gameplay
 		 * bug). g_activeKeyboardControllers stays at its 0x1 default. */

@@ -178,6 +178,55 @@ int g_PsyX_FlashlightActive = 0;
 float g_PsyX_FlashlightPos[3] = {0.0f};
 float g_PsyX_FlashlightDir[3] = {0.0f};
 
+/* PC port: MSAA sample count for the default framebuffer. 0 = off (no
+ * multisample requested), 2/4/8 = N-sample MSAA. Read in GR_InitialiseRender
+ * BEFORE the GL context is created (SDL_GL_MULTISAMPLE* attributes), so the
+ * host must set it from config BEFORE PsyX_Initialise. When > 0, two blits that
+ * read/write the (now multisample) default framebuffer with scaling or a
+ * single-sample peer become illegal — GR_StoreFrameBuffer resolves first and
+ * GR_PresentLastFrame draws a fullscreen quad instead of blitting. */
+int g_cfg_msaaSamples = 0;
+
+/* PC port: full-screen post-process look applied once per frame in
+ * GR_PostProcess (PsyX_EndScene, after the freeze capture + console hook, just
+ * before swap). 0 = off; 1.. select a built-in look (see the post fragment
+ * shader switch). Runtime-settable (launcher config key post_process + the F2
+ * in-game cycle). Reads the final composed backbuffer through a resolve
+ * texture, so it sees everything (world, UI, console) and is MSAA-safe. */
+int g_cfg_postProcess = 0;
+#define POST_PROCESS_MODE_COUNT 8
+/* PC port: tone-map operator applied as the final step of the post-process
+ * shader. 0=off, 1=Reinhard, 2=ACES, 3=Filmic. F3 cycles it in-game. Defined
+ * outside the PSYX_HAS_POSTPROCESS guard so non-GL builds still link. */
+int g_cfg_tonemap = 0;
+
+/* PC port: per-pixel (fragment-shader) flashlight cone instead of the PSX
+ * per-vertex lighting. 0=off (per-vertex), 1=on. F4 toggles it in-game. */
+int g_PsyX_UsePerPixelFlashlight = 0;
+
+/* PC port: per-frame flashlight cone parameters (view space), set by game code.
+ * The shader consumes them only when (g_PsyX_UsePerPixelFlashlight &&
+ * g_PsyX_FlashlightActive). Defaults make the cone inert (active=0). */
+int   g_PsyX_FlashlightActive   = 0;
+float g_PsyX_FlashlightPos[3]   = { 0.0f, 0.0f, 0.0f };
+float g_PsyX_FlashlightDir[3]   = { 0.0f, 0.0f, 1.0f };
+float g_PsyX_FlashlightColor[3] = { 1.0f, 0.95f, 0.85f };  /* warm white; per-fragment N.L + screen-blend keep facing/near surfaces a bright hotspot while angled/far surfaces fall off naturally */
+float g_PsyX_FlashlightInnerCos = 0.94f;  /* ~20 deg */
+float g_PsyX_FlashlightOuterCos = 0.82f;  /* ~35 deg */
+float g_PsyX_FlashlightRange    = 4000.0f;
+
+/* PC port: live per-effect intensity -- [ lowers, ] raises, backslash switches
+ * which effect (among the enabled ones); also the FLINT/POSTINT/TMINT console
+ * commands. Persisted to config. */
+float g_PsyX_FlashlightIntensity = 1.90f; /* cone brightness scale, 0..3 */
+float g_cfg_postProcessIntensity = 1.0f; /* post-process effect mix, 0..1 */
+float g_cfg_tonemapIntensity     = 1.0f; /* tonemap mix, 0..1 */
+
+/* Defined later in the file (post-process module); called from GR_InitialisePSX
+ * and PsyX_EndScene. */
+void GR_InitPostProcess(void);
+void GR_PostProcess(void);
+
 int vram_need_update = 1;
 
 /* PC port: runtime gate for framebuffer→VRAM feedback. See PsyX_render.h. */
@@ -408,6 +457,18 @@ int GR_InitialiseGLContext(char* windowName, int fullscreen)
 
 	g_window = SDL_CreateWindow(windowName, SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, g_windowWidth, g_windowHeight, windowFlags);
 
+	/* PC port: if MSAA was requested but the driver can't provide a multisample
+	 * pixel format, SDL_CreateWindow fails. Drop MSAA and retry once so the game
+	 * still launches (just without antialiasing). */
+	if (g_window == NULL && g_cfg_msaaSamples > 0)
+	{
+		eprintwarn("Window creation with %dx MSAA failed (%s); retrying without MSAA\n", g_cfg_msaaSamples, SDL_GetError());
+		SDL_GL_SetAttribute(SDL_GL_MULTISAMPLEBUFFERS, 0);
+		SDL_GL_SetAttribute(SDL_GL_MULTISAMPLESAMPLES, 0);
+		g_cfg_msaaSamples = 0;
+		g_window = SDL_CreateWindow(windowName, SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, g_windowWidth, g_windowHeight, windowFlags);
+	}
+
 	if (g_window == NULL)
 	{
 		eprinterr("Failed to initialise SDL window!\n");
@@ -505,6 +566,16 @@ int GR_InitialiseRender(char* windowName, int width, int height, int fullscreen)
 
 #if USE_OPENGL
 	SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 1);
+
+	/* PC port: request MSAA on the default framebuffer when enabled. Must be
+	 * set before the window/context is created (GR_InitialiseGLContext). The
+	 * driver picks a multisample pixel format; if it can't, window creation is
+	 * retried without MSAA inside GR_InitialiseGLContext. */
+	if (g_cfg_msaaSamples > 0)
+	{
+		SDL_GL_SetAttribute(SDL_GL_MULTISAMPLEBUFFERS, 1);
+		SDL_GL_SetAttribute(SDL_GL_MULTISAMPLESAMPLES, g_cfg_msaaSamples);
+	}
 
 #if defined(RENDERER_OGL) || defined(RENDERER_OGLES)
 	if (!GR_InitialiseGLContext(windowName, fullscreen))
@@ -619,6 +690,13 @@ typedef struct
 	GLint fogStrengthLoc;
 	GLint pgxpEnabledLoc;
 	GLint szMaxLoc;
+	GLint flashlightOnLoc;
+	GLint flLightPosLoc;
+	GLint flDirLoc;
+	GLint flColorLoc;
+	GLint flInnerCosLoc;
+	GLint flOuterCosLoc;
+	GLint flRangeLoc;
 #endif
 } GTEShader;
 
@@ -640,6 +718,13 @@ GLint u_fogToBlackLoc;
 GLint u_fogStrengthLoc;
 GLint u_pgxpEnabledLoc;
 GLint u_szMaxLoc;
+GLint u_flashlightOnLoc;
+GLint u_flLightPosLoc;
+GLint u_flDirLoc;
+GLint u_flColorLoc;
+GLint u_flInnerCosLoc;
+GLint u_flOuterCosLoc;
+GLint u_flRangeLoc;
 
 float g_PsyX_FogColor[3] = { 0.0f, 0.0f, 0.0f };
 /* World fog density multiplier. 1.0 = native PC shader fog; >1 deepens it toward the
@@ -855,6 +940,7 @@ int g_PsxFogToBlack = 0;
 	"	attribute vec4 a_extra; // texcoord.xy ofs, unused.xy\n"\
 	"	attribute vec4 a_zw;\n"\
 	"	attribute vec3 a_pgxp;\n"\
+	"	attribute vec3 a_viewpos;\n"\
 	"	uniform mat4 Projection;\n"\
 	"	uniform mat4 Projection3D;\n"\
 	"	uniform int u_pgxpEnabled;\n"\
@@ -883,6 +969,7 @@ int g_PsxFogToBlack = 0;
 	 * "always treat as 3D" behavior — matches legacy behavior. */	"		v_is3d = (u_pgxpEnabled > 0) ? ((a_pgxp.z > 0.0) ? 1.0 : 0.0) : 1.0;\n"\
 	"		v_z = (gl_Position.z - 40.0) * 0.005;\n"\
 	"		v_fogAmount = clamp(a_extra.z / 127.0, 0.0, 1.0);\n"\
+	"		v_viewpos = a_viewpos;\n"\
 	"	}\n"
 
 #define GPU_FRAGMENT_SAMPLE_SHADER(bit) \
@@ -900,12 +987,39 @@ int g_PsxFogToBlack = 0;
 	"	uniform vec3 u_fogColor;\n"\
 	"	uniform int u_fogToBlack;\n"\
 	"	uniform float u_fogStrength;\n"\
+	"	uniform int u_flashlightOn;\n"\
+	"	uniform vec3 u_flLightPos;\n"\
+	"	uniform vec3 u_flDir;\n"\
+	"	uniform vec3 u_flColor;\n"\
+	"	uniform float u_flInnerCos;\n"\
+	"	uniform float u_flOuterCos;\n"\
+	"	uniform float u_flRange;\n"\
 	"	void main() {\n"\
 	"		if(bilinearFilter > 0 && v_is3d > 0.5)\n"\
 	"			fragColor = BilinearTextureSample(v_texcoord.xy);\n"\
 	"		else\n"\
 	"			fragColor = NearestTextureSample(v_texcoord.xy);\n"\
+	"		vec3 flAlbedo = fragColor.rgb;\n"\
 	"		fragColor *= v_color;\n"\
+	/* Per-pixel flashlight: spotlight cone * per-fragment Lambert (N.L). GrVertex carries no usable normals, so the surface normal is reconstructed from the view-space position gradient (cross(dFdx,dFdy)) -- v_viewpos is the same proven view-space pos the cone already uses, so this needs no GTE-side normal capture and is exact per triangle face. Derivatives are taken inside the UNIFORM u_flashlightOn branch (never the per-fragment z test) so they stay well-defined. The flashlight term modulates the texture albedo (flAlbedo) and adds to the dimmed base, so lit surfaces keep their texture and N.L shading instead of washing to flat white. */\
+	"		if (u_flashlightOn > 0) {\n"\
+	"			vec3 flP = v_viewpos;\n"\
+	"			vec3 flN = cross(dFdx(flP), dFdy(flP));\n"\
+	"			if (flP.z > 0.0) {\n"\
+	"				fragColor.rgb *= 0.15; // per-vertex lighting -> dark base so the per-pixel cone is the only flashlight\n"\
+	"				vec3 L = u_flLightPos - flP;\n"\
+	"				float d = length(L);\n"\
+	"				L /= max(d, 0.0001);\n"\
+	"				float nlen = length(flN);\n"\
+	"				vec3 N = (nlen > 1e-9) ? flN / nlen : vec3(0.0, 0.0, -1.0);\n"\
+	"				if (dot(N, flP) > 0.0) N = -N;\n"\
+	"				float ndl = 0.15 + 0.85 * max(dot(N, L), 0.0);\n"\
+	"				float cone  = smoothstep(u_flOuterCos, u_flInnerCos, dot(-L, normalize(u_flDir)));\n"\
+	"				float atten = clamp(1.0 - d / u_flRange, 0.0, 1.0);\n"\
+	"				vec3 fl = u_flColor * (cone * atten * ndl);\n"\
+	"				fragColor.rgb += flAlbedo * fl;\n"\
+	"			}\n"\
+	"		}\n"\
 	"		float fogAmt = clamp(v_fogAmount * u_fogStrength, 0.0, 1.0);\n"\
 	"		if (u_fogToBlack > 0)\n"\
 	"			fragColor.rgb *= (1.0 - fogAmt);\n"\
@@ -921,6 +1035,7 @@ const char* gte_shader_4 =
 	"varying float v_z;\n"
 	"varying float v_fogAmount;\n"
 	"varying float v_is3d;\n"
+	"varying vec3 v_viewpos;\n"
 	"#ifdef VERTEX\n"
 	GTE_VERTEX_SHADER
 	"#else\n"
@@ -934,6 +1049,7 @@ const char* gte_shader_8 =
 	"varying float v_z;\n"
 	"varying float v_fogAmount;\n"
 	"varying float v_is3d;\n"
+	"varying vec3 v_viewpos;\n"
 	"#ifdef VERTEX\n"
 	GTE_VERTEX_SHADER
 	"#else\n"
@@ -947,6 +1063,7 @@ const char* gte_shader_16 =
 	"varying float v_z;\n"
 	"varying float v_fogAmount;\n"
 	"varying float v_is3d;\n"
+	"varying vec3 v_viewpos;\n"
 	"#ifdef VERTEX\n"
 	GTE_VERTEX_SHADER
 	"#else\n"
@@ -960,6 +1077,7 @@ const char* gte_shader_32_rgba =
 	"varying float v_z;\n"
 	"varying float v_fogAmount;\n"
 	"varying float v_is3d;\n"
+	"varying vec3 v_viewpos;\n"
 	"#ifdef VERTEX\n"
 	GTE_VERTEX_SHADER
 	"#else\n"
@@ -1124,6 +1242,7 @@ ShaderID GR_Shader_Compile(const char* source)
 	glBindAttribLocation(program, a_color, "a_color");
 	glBindAttribLocation(program, a_extra, "a_extra");
 	glBindAttribLocation(program, a_normal, "a_normal");
+	glBindAttribLocation(program, a_viewpos, "a_viewpos");
 
 	glLinkProgram(program);
 	if(GR_Shader_CheckProgramStatus(program) == 0)
@@ -1195,6 +1314,13 @@ void GR_CompilePSXShader(GTEShader* sh, const char* source)
 	sh->fogStrengthLoc = glGetUniformLocation(sh->shader, "u_fogStrength");
 	sh->pgxpEnabledLoc = glGetUniformLocation(sh->shader, "u_pgxpEnabled");
 	sh->szMaxLoc = glGetUniformLocation(sh->shader, "u_szMax");
+	sh->flashlightOnLoc = glGetUniformLocation(sh->shader, "u_flashlightOn");
+	sh->flLightPosLoc = glGetUniformLocation(sh->shader, "u_flLightPos");
+	sh->flDirLoc = glGetUniformLocation(sh->shader, "u_flDir");
+	sh->flColorLoc = glGetUniformLocation(sh->shader, "u_flColor");
+	sh->flInnerCosLoc = glGetUniformLocation(sh->shader, "u_flInnerCos");
+	sh->flOuterCosLoc = glGetUniformLocation(sh->shader, "u_flOuterCos");
+	sh->flRangeLoc = glGetUniformLocation(sh->shader, "u_flRange");
 #endif
 }
 
@@ -1216,6 +1342,19 @@ int GR_InitialisePSX()
 	glDepthFunc(GL_LEQUAL);
 	glEnable(GL_STENCIL_TEST);
 	glBlendColor(0.5f, 0.5f, 0.5f, 0.25f);
+
+	/* PC port: enable MSAA rasterisation when a multisample framebuffer was
+	 * obtained. Core profiles default this on, but enable explicitly + report
+	 * the sample count the driver actually granted (may differ from requested). */
+	if (g_cfg_msaaSamples > 0)
+	{
+		glEnable(GL_MULTISAMPLE);
+		int actualSamples = 0;
+		SDL_GL_GetAttribute(SDL_GL_MULTISAMPLESAMPLES, &actualSamples);
+		eprintf("*MSAA: requested %dx, got %dx\n", g_cfg_msaaSamples, actualSamples);
+		if (actualSamples <= 1)
+			g_cfg_msaaSamples = 0; /* driver gave us a single-sample buffer after all */
+	}
 
 	// gen framebuffer
 	{
@@ -1335,6 +1474,8 @@ int GR_InitialisePSX()
 #else
 #error
 #endif
+
+	GR_InitPostProcess();
 
 	GR_ResetDevice();
 
@@ -1482,6 +1623,13 @@ void GR_SetTexture(TextureID texture, TexFormat texFormat)
 		u_fogStrengthLoc = g_gte_shader_4.fogStrengthLoc;
 		u_pgxpEnabledLoc = g_gte_shader_4.pgxpEnabledLoc;
 		u_szMaxLoc = g_gte_shader_4.szMaxLoc;
+		u_flashlightOnLoc = g_gte_shader_4.flashlightOnLoc;
+		u_flLightPosLoc = g_gte_shader_4.flLightPosLoc;
+		u_flDirLoc = g_gte_shader_4.flDirLoc;
+		u_flColorLoc = g_gte_shader_4.flColorLoc;
+		u_flInnerCosLoc = g_gte_shader_4.flInnerCosLoc;
+		u_flOuterCosLoc = g_gte_shader_4.flOuterCosLoc;
+		u_flRangeLoc = g_gte_shader_4.flRangeLoc;
 		break;
 	case TF_8_BIT:
 		GR_SetShader(g_gte_shader_8.shader);
@@ -1496,6 +1644,13 @@ void GR_SetTexture(TextureID texture, TexFormat texFormat)
 		u_fogStrengthLoc = g_gte_shader_8.fogStrengthLoc;
 		u_pgxpEnabledLoc = g_gte_shader_8.pgxpEnabledLoc;
 		u_szMaxLoc = g_gte_shader_8.szMaxLoc;
+		u_flashlightOnLoc = g_gte_shader_8.flashlightOnLoc;
+		u_flLightPosLoc = g_gte_shader_8.flLightPosLoc;
+		u_flDirLoc = g_gte_shader_8.flDirLoc;
+		u_flColorLoc = g_gte_shader_8.flColorLoc;
+		u_flInnerCosLoc = g_gte_shader_8.flInnerCosLoc;
+		u_flOuterCosLoc = g_gte_shader_8.flOuterCosLoc;
+		u_flRangeLoc = g_gte_shader_8.flRangeLoc;
 		break;
 	case TF_16_BIT:
 		GR_SetShader(g_gte_shader_16.shader);
@@ -1510,6 +1665,13 @@ void GR_SetTexture(TextureID texture, TexFormat texFormat)
 		u_fogStrengthLoc = g_gte_shader_16.fogStrengthLoc;
 		u_pgxpEnabledLoc = g_gte_shader_16.pgxpEnabledLoc;
 		u_szMaxLoc = g_gte_shader_16.szMaxLoc;
+		u_flashlightOnLoc = g_gte_shader_16.flashlightOnLoc;
+		u_flLightPosLoc = g_gte_shader_16.flLightPosLoc;
+		u_flDirLoc = g_gte_shader_16.flDirLoc;
+		u_flColorLoc = g_gte_shader_16.flColorLoc;
+		u_flInnerCosLoc = g_gte_shader_16.flInnerCosLoc;
+		u_flOuterCosLoc = g_gte_shader_16.flOuterCosLoc;
+		u_flRangeLoc = g_gte_shader_16.flRangeLoc;
 		break;
 	case TF_32_BIT_RGBA:
 		GR_SetShader(g_gte_shader_32_rgba.shader);
@@ -1524,6 +1686,13 @@ void GR_SetTexture(TextureID texture, TexFormat texFormat)
 		u_fogStrengthLoc = g_gte_shader_32_rgba.fogStrengthLoc;
 		u_pgxpEnabledLoc = g_gte_shader_32_rgba.pgxpEnabledLoc;
 		u_szMaxLoc = g_gte_shader_32_rgba.szMaxLoc;
+		u_flashlightOnLoc = g_gte_shader_32_rgba.flashlightOnLoc;
+		u_flLightPosLoc = g_gte_shader_32_rgba.flLightPosLoc;
+		u_flDirLoc = g_gte_shader_32_rgba.flDirLoc;
+		u_flColorLoc = g_gte_shader_32_rgba.flColorLoc;
+		u_flInnerCosLoc = g_gte_shader_32_rgba.flInnerCosLoc;
+		u_flOuterCosLoc = g_gte_shader_32_rgba.flOuterCosLoc;
+		u_flRangeLoc = g_gte_shader_32_rgba.flRangeLoc;
 		break;
 	}
 
@@ -1549,6 +1718,30 @@ void GR_SetTexture(TextureID texture, TexFormat texFormat)
 
 	if (u_fogStrengthLoc != -1)
 		glUniform1f(u_fogStrengthLoc, g_PsyX_FogStrength);
+
+	/* Per-pixel flashlight cone. u_flashlightOn is 0 unless BOTH the master
+	 * config flag and the per-frame game push are set, so the OFF path never
+	 * touches the spotlight branch (and the vsz>0 gate also keeps it off). */
+	if (u_flashlightOnLoc != -1)
+		glUniform1i(u_flashlightOnLoc,
+		            (g_PsyX_UsePerPixelFlashlight && g_PsyX_FlashlightActive) ? 1 : 0);
+	if (u_flLightPosLoc != -1)
+		glUniform3fv(u_flLightPosLoc, 1, g_PsyX_FlashlightPos);
+	if (u_flDirLoc != -1)
+		glUniform3fv(u_flDirLoc, 1, g_PsyX_FlashlightDir);
+	if (u_flColorLoc != -1) {
+		float flCol[3];
+		flCol[0] = g_PsyX_FlashlightColor[0] * g_PsyX_FlashlightIntensity;
+		flCol[1] = g_PsyX_FlashlightColor[1] * g_PsyX_FlashlightIntensity;
+		flCol[2] = g_PsyX_FlashlightColor[2] * g_PsyX_FlashlightIntensity;
+		glUniform3fv(u_flColorLoc, 1, flCol);
+	}
+	if (u_flInnerCosLoc != -1)
+		glUniform1f(u_flInnerCosLoc, g_PsyX_FlashlightInnerCos);
+	if (u_flOuterCosLoc != -1)
+		glUniform1f(u_flOuterCosLoc, g_PsyX_FlashlightOuterCos);
+	if (u_flRangeLoc != -1)
+		glUniform1f(u_flRangeLoc, g_PsyX_FlashlightRange);
 
 	/* Push the dither-force uniform every shader bind. Cheap (single
 	 * float upload) and ensures runtime config changes (if we add a
@@ -2040,6 +2233,256 @@ void GR_SetOffscreenState(const RECT16* offscreenRect, int enable)
 #endif
 }
 
+/* ============================================================================
+ * PC port: full-screen post-process pass + MSAA-safe fullscreen blit helper.
+ *
+ * One tiny shader program draws a single full-screen triangle (from gl_VertexID,
+ * no vertex buffer) sampling a source texture, applying the look selected by
+ * g_cfg_postProcess. The same helper is reused to "present" the freeze-frame
+ * when MSAA is on (a single-sample -> multisample glBlitFramebuffer is illegal,
+ * but a shader draw into the multisample default FBO is fine).
+ * ========================================================================== */
+#if defined(RENDERER_OGL) || (OGLES_VERSION == 3)
+#define PSYX_HAS_POSTPROCESS 1
+#else
+#define PSYX_HAS_POSTPROCESS 0
+#endif
+
+#if PSYX_HAS_POSTPROCESS
+
+static ShaderID g_postShader = (ShaderID)-1;
+static GLint    g_postLoc_mode = -1;
+static GLint    g_postLoc_texSize = -1;
+static GLint    g_postLoc_time = -1;
+static GLint    g_postLoc_tonemap = -1;
+static GLint    g_postLoc_postInt = -1;
+static GLint    g_postLoc_tmInt = -1;
+static GLuint   g_postVAO = 0;
+static GLuint   g_postFBO = 0;
+static TextureID g_postTex = (TextureID)-1;
+static int      g_postW = 0;
+static int      g_postH = 0;
+static unsigned g_postFrame = 0;
+
+static const char* s_postShaderSrc =
+	"varying vec2 v_uv;\n"
+	"#ifdef VERTEX\n"
+	"void main() {\n"
+	"	vec2 p = vec2(float((gl_VertexID & 1) << 2) - 1.0, float((gl_VertexID & 2) << 1) - 1.0);\n"
+	"	v_uv = (p + 1.0) * 0.5;\n"
+	"	gl_Position = vec4(p, 0.0, 1.0);\n"
+	"}\n"
+	"#else\n"
+	"uniform sampler2D s_texture;\n"
+	"uniform int   u_postMode;\n"
+	"uniform vec2  u_texSize;\n"  /* (1/width, 1/height) of the source */
+	"uniform float u_time;\n"
+	"uniform int   u_tonemap;\n"
+	"uniform float u_postIntensity;\n"
+	"uniform float u_tmIntensity;\n"
+	"float hash(vec2 p) {\n"
+	"	p = fract(p * vec2(123.34, 456.21));\n"
+	"	p += dot(p, p + 45.32);\n"
+	"	return fract(p.x * p.y);\n"
+	"}\n"
+	"vec3 colorGrade(vec3 c) {\n"
+	"	c = (c - 0.5) * 1.12 + 0.5;\n"                       /* contrast */
+	"	float l = dot(c, vec3(0.299, 0.587, 0.114));\n"
+	"	c = mix(vec3(l), c, 1.15);\n"                        /* saturation */
+	"	c *= vec3(1.06, 1.0, 0.94);\n"                       /* warm tint */
+	"	return c;\n"
+	"}\n"
+	"vec2 curve(vec2 uv) {\n"
+	"	uv = uv * 2.0 - 1.0;\n"
+	"	vec2 o = abs(uv.yx) / vec2(6.0, 5.0);\n"
+	"	uv += uv * o * o;\n"
+	"	return uv * 0.5 + 0.5;\n"
+	"}\n"
+	"vec3 tonemap(vec3 c) {\n"
+	"	if (u_tonemap == 1) { return c / (c + vec3(1.0)); }\n"                          /* Reinhard */
+	"	if (u_tonemap == 2) {\n"                                                          /* ACES (Narkowicz) */
+	"		c *= 0.6;\n"
+	"		return clamp((c*(2.51*c+0.03))/(c*(2.43*c+0.59)+0.14), 0.0, 1.0);\n"
+	"	}\n"
+	"	if (u_tonemap == 3) {\n"                                                          /* Filmic (Hejl/Burgess) */
+	"		vec3 x = max(vec3(0.0), c - 0.004);\n"
+	"		return (x*(6.2*x+0.5))/(x*(6.2*x+1.7)+0.06);\n"
+	"	}\n"
+	"	return c;\n"
+	"}\n"
+	"void main() {\n"
+	"	vec2 uv = v_uv;\n"
+	"	vec3 col;\n"
+	"	vec3 origCol = texture2D(s_texture, v_uv).rgb;\n"
+	"	if (u_postMode == 1) {\n"                            /* CRT */
+	"		uv = curve(uv);\n"
+	"		if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) { fragColor = vec4(0.0, 0.0, 0.0, 1.0); return; }\n"
+	"		col = texture2D(s_texture, uv).rgb;\n"
+	"		col *= 0.75 + 0.25 * abs(sin(uv.y * 240.0 * 3.14159));\n"
+	"		int m = int(mod(gl_FragCoord.x, 3.0));\n"
+	"		vec3 mask = m == 0 ? vec3(1.0, 0.72, 0.72) : (m == 1 ? vec3(0.72, 1.0, 0.72) : vec3(0.72, 0.72, 1.0));\n"
+	"		col *= mask * 1.25;\n"
+	"		vec2 d = uv - 0.5; col *= clamp(1.0 - dot(d, d) * 1.1, 0.0, 1.0);\n"
+	"	} else if (u_postMode == 2) {\n"                     /* Scanlines */
+	"		col = texture2D(s_texture, uv).rgb;\n"
+	"		col *= 0.7 + 0.3 * abs(sin(uv.y * 240.0 * 3.14159));\n"
+	"	} else if (u_postMode == 3) {\n"                     /* Vignette */
+	"		col = texture2D(s_texture, uv).rgb;\n"
+	"		vec2 d = uv - 0.5; col *= clamp(1.0 - dot(d, d) * 1.3, 0.0, 1.0);\n"
+	"	} else if (u_postMode == 4) {\n"                     /* Color grade */
+	"		col = colorGrade(texture2D(s_texture, uv).rgb);\n"
+	"	} else if (u_postMode == 5) {\n"                     /* Film grain */
+	"		col = texture2D(s_texture, uv).rgb;\n"
+	"		float n = hash(floor(uv / u_texSize) + u_time);\n"
+	"		col += (n - 0.5) * 0.10;\n"
+	"	} else if (u_postMode == 6) {\n"                     /* Sharpen */
+	"		vec3 c = texture2D(s_texture, uv).rgb;\n"
+	"		vec3 b = (texture2D(s_texture, uv + vec2(u_texSize.x, 0.0)).rgb\n"
+	"		        + texture2D(s_texture, uv - vec2(u_texSize.x, 0.0)).rgb\n"
+	"		        + texture2D(s_texture, uv + vec2(0.0, u_texSize.y)).rgb\n"
+	"		        + texture2D(s_texture, uv - vec2(0.0, u_texSize.y)).rgb) * 0.25;\n"
+	"		col = c + (c - b) * 0.85;\n"
+	"	} else if (u_postMode == 7) {\n"                     /* PSX retro: downsample + dither + 5-bit */
+	"		vec2 grid = vec2(320.0, 240.0);\n"
+	"		vec2 quv = (floor(uv * grid) + 0.5) / grid;\n"
+	"		col = texture2D(s_texture, quv).rgb;\n"
+	"		mat4 dith = mat4(-4.0, 0.0, -3.0, 1.0, 2.0, -2.0, 3.0, -1.0, -3.0, 1.0, -4.0, 0.0, 3.0, -1.0, 2.0, -2.0) / 255.0;\n"
+	"		ivec2 dc = ivec2(mod(gl_FragCoord.xy, 4.0));\n"
+	"		col += vec3(dith[dc.x][dc.y]);\n"
+	"		col = floor(col * 32.0 + 0.5) / 32.0;\n"
+	"	} else if (u_postMode == 8) {\n"                     /* Cinematic: grade + vignette + grain */
+	"		col = colorGrade(texture2D(s_texture, uv).rgb);\n"
+	"		vec2 d = uv - 0.5; col *= clamp(1.0 - dot(d, d) * 0.9, 0.0, 1.0);\n"
+	"		float n = hash(floor(uv / u_texSize) + u_time);\n"
+	"		col += (n - 0.5) * 0.045;\n"
+	"	} else {\n"                                          /* passthrough */
+	"		col = texture2D(s_texture, uv).rgb;\n"
+	"	}\n"
+	"	col = mix(origCol, col, u_postIntensity);\n"
+	"	col = mix(col, tonemap(col), u_tmIntensity);\n"
+	"	fragColor = vec4(clamp(col, 0.0, 1.0), 1.0);\n"
+	"}\n"
+	"#endif\n";
+
+void GR_InitPostProcess(void)
+{
+	if (g_postShader != (ShaderID)-1)
+		return;
+
+	g_postShader = GR_Shader_Compile(s_postShaderSrc);
+	g_postLoc_mode    = glGetUniformLocation(g_postShader, "u_postMode");
+	g_postLoc_texSize = glGetUniformLocation(g_postShader, "u_texSize");
+	g_postLoc_time    = glGetUniformLocation(g_postShader, "u_time");
+	g_postLoc_tonemap = glGetUniformLocation(g_postShader, "u_tonemap");
+	g_postLoc_postInt = glGetUniformLocation(g_postShader, "u_postIntensity");
+	g_postLoc_tmInt   = glGetUniformLocation(g_postShader, "u_tmIntensity");
+
+	glGenVertexArrays(1, &g_postVAO);
+}
+
+static void GR_EnsurePostTarget(int w, int h)
+{
+	if (g_postTex != (TextureID)-1 && g_postW == w && g_postH == h)
+		return;
+
+	if (g_postTex == (TextureID)-1)
+	{
+		glGenTextures(1, &g_postTex);
+		glGenFramebuffers(1, &g_postFBO);
+	}
+
+	g_postW = w;
+	g_postH = h;
+
+	glBindTexture(GL_TEXTURE_2D, g_postTex);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+	glBindTexture(GL_TEXTURE_2D, 0);
+
+	glBindFramebuffer(GL_FRAMEBUFFER, g_postFBO);
+	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, g_postTex, 0);
+	glBindFramebuffer(GL_FRAMEBUFFER, 0);
+}
+
+/* Draw a full-screen triangle sampling `tex` into the currently bound default
+ * framebuffer, applying post mode `mode` (0 = straight copy). Disables depth /
+ * blend / scissor / stencil for the draw, then invalidates the renderer's
+ * cached GL state so the next frame's prims re-establish it. */
+static void GR_DrawFullscreenTexture(TextureID tex, int mode)
+{
+	glBindFramebuffer(GL_FRAMEBUFFER, 0);
+	glViewport(0, 0, g_windowWidth, g_windowHeight);
+
+	glDisable(GL_DEPTH_TEST);
+	glDisable(GL_BLEND);
+	glDisable(GL_SCISSOR_TEST);
+	glDisable(GL_STENCIL_TEST);
+
+	glUseProgram(g_postShader);
+	if (g_postLoc_mode != -1)
+		glUniform1i(g_postLoc_mode, mode);
+	if (g_postLoc_texSize != -1)
+		glUniform2f(g_postLoc_texSize,
+		            g_windowWidth  > 0 ? 1.0f / (float)g_windowWidth  : 0.0f,
+		            g_windowHeight > 0 ? 1.0f / (float)g_windowHeight : 0.0f);
+	if (g_postLoc_time != -1)
+		glUniform1f(g_postLoc_time, (float)(g_postFrame & 1023));
+	if (g_postLoc_tonemap != -1)
+		glUniform1i(g_postLoc_tonemap, g_cfg_tonemap);
+	if (g_postLoc_postInt != -1)
+		glUniform1f(g_postLoc_postInt, g_cfg_postProcessIntensity);
+	if (g_postLoc_tmInt != -1)
+		glUniform1f(g_postLoc_tmInt, g_cfg_tonemapIntensity);
+
+	glBindTexture(GL_TEXTURE_2D, tex);
+	glBindVertexArray(g_postVAO);
+	glDrawArrays(GL_TRIANGLES, 0, 3);
+	glBindVertexArray(0);
+
+	glEnable(GL_STENCIL_TEST);
+
+	/* The actual GL state now matches: blend off, depth off, scissor off.
+	 * Sync the trackers to that so the next set-call doesn't skip a needed
+	 * change; force the shader/texture trackers to rebind. */
+	g_PreviousShader      = (ShaderID)-1;
+	g_lastBoundTexture    = (TextureID)-1;
+	g_PreviousBlendMode   = BM_NONE;
+	g_PreviousDepthMode   = 0;
+	g_PreviousScissorState = 0;
+}
+
+/* PC port: post-process the composed backbuffer in place. Resolves the (possibly
+ * multisample) default framebuffer into a single-sample texture, then redraws it
+ * full-screen through the selected look. No-op when g_cfg_postProcess <= 0. */
+void GR_PostProcess(void)
+{
+	if (g_cfg_postProcess <= 0 && g_cfg_tonemap <= 0)
+		return;
+	if (g_postShader == (ShaderID)-1)
+		GR_InitPostProcess();
+
+	GR_EnsurePostTarget(g_windowWidth, g_windowHeight);
+
+	/* Resolve/copy backbuffer -> single-sample source texture (same size, so
+	 * this is a legal multisample resolve when MSAA is on). */
+	glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, g_postFBO);
+	glBlitFramebuffer(0, 0, g_windowWidth, g_windowHeight, 0, 0, g_postW, g_postH, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+	glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+
+	g_postFrame++;
+	GR_DrawFullscreenTexture(g_postTex, g_cfg_postProcess);
+}
+
+#else  /* !PSYX_HAS_POSTPROCESS */
+void GR_InitPostProcess(void) {}
+void GR_PostProcess(void) {}
+#endif
+
 /* See g_PsxPresentLastFrame above. Called from PsyX_EndScene after the
  * frame is fully composed in the backbuffer, before the swap. */
 void GR_CaptureLastFrame(void)
@@ -2095,6 +2538,19 @@ void GR_PresentLastFrame(void)
 	if (!g_freezeFrameValid)
 		return;
 
+#if PSYX_HAS_POSTPROCESS
+	/* MSAA: the default framebuffer is multisample, and a single-sample ->
+	 * multisample glBlitFramebuffer is illegal. Draw the captured frame as a
+	 * full-screen textured triangle instead (writing into the multisample FBO
+	 * is fine). */
+	if (g_cfg_msaaSamples > 0 && g_postShader != (ShaderID)-1)
+	{
+		GR_DrawFullscreenTexture(g_freezeFrameTex, 0);
+		g_freezePresentedThisFrame = 1;
+		return;
+	}
+#endif
+
 	glBindFramebuffer(GL_READ_FRAMEBUFFER, g_freezeFrameFBO);
 	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
 
@@ -2138,8 +2594,23 @@ void GR_StoreFrameBuffer(int x, int y, int w, int h)
 
 	// before drawing set source and target
 	{
+		GLuint storeReadFBO = 0;	// default: read straight from the backbuffer
+#if PSYX_HAS_POSTPROCESS
+		/* MSAA: a multisample backbuffer cannot be the source of a *scaled*
+		 * blit (this one shrinks window -> w×h and flips Y). Resolve it
+		 * same-size into the single-sample post texture first, then scale
+		 * from there. */
+		if (g_cfg_msaaSamples > 0)
+		{
+			GR_EnsurePostTarget(g_windowWidth, g_windowHeight);
+			glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+			glBindFramebuffer(GL_DRAW_FRAMEBUFFER, g_postFBO);
+			glBlitFramebuffer(0, 0, g_windowWidth, g_windowHeight, 0, 0, g_postW, g_postH, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+			storeReadFBO = g_postFBO;
+		}
+#endif
 		// setup draw and read framebuffers
-		glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);					// source is backbuffer
+		glBindFramebuffer(GL_READ_FRAMEBUFFER, storeReadFBO);		// backbuffer, or resolved MSAA copy
 		glBindFramebuffer(GL_DRAW_FRAMEBUFFER, g_glBlitFramebuffer);
 
 		/* PC port: destination is the w-by-h g_fbTexture, so the frame must be
@@ -2499,6 +2970,8 @@ void GR_BindVertexBuffer()
 	glVertexAttribPointer(a_extra, 4, GL_BYTE, GL_FALSE, sizeof(GrVertex), &((GrVertex*)NULL)->tcx);
 	glVertexAttribPointer(a_normal, 3, GL_FLOAT, GL_FALSE, sizeof(GrVertex), &((GrVertex*)NULL)->nx);
 	glEnableVertexAttribArray(a_normal);
+	glVertexAttribPointer(a_viewpos, 3, GL_FLOAT, GL_FALSE, sizeof(GrVertex), &((GrVertex*)NULL)->vsx);
+	glEnableVertexAttribArray(a_viewpos);
 
 	g_curVertexBuffer++;
 	g_curVertexBuffer &= 1;

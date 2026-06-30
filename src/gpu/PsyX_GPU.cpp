@@ -97,15 +97,61 @@ extern "C" void Shadow_Store(void* addr, float x, float y, float w, unsigned val
 	Shadow_Put(addr, x, y, w, value);
 }
 
+/* ---- View-space shadow for the per-pixel flashlight -------------------------
+ * A second table parallel to s_shadow, keyed the same way (vertex-word native
+ * address) and gen-stamped with the same s_pgxpGen (bumped every frame in
+ * PGXP_CoverageTick regardless of flags). It holds the GTE RTPS camera-space
+ * position of each projected vertex and is propagated along the SAME copy path
+ * as PGXP (Shadow_Copy below). Entirely gated by g_PsyX_UsePerPixelFlashlight;
+ * the off path never reads or writes it. */
+struct VsEntry { uintptr_t key; unsigned gen; float vx, vy, vz; };
+static VsEntry s_vshadow[SHADOW_SIZE];
+
+static void Vs_Put(void* addr, float vx, float vy, float vz) {
+	uintptr_t k = (uintptr_t)addr;
+	unsigned s = ShadowHash(k);
+	for (int i = 0; i < 16; i++) {
+		VsEntry* e = &s_vshadow[(s + i) & SHADOW_MASK];
+		if (e->key == k || e->key == 0 || e->gen != s_pgxpGen) {
+			e->key = k; e->gen = s_pgxpGen; e->vx = vx; e->vy = vy; e->vz = vz; return;
+		}
+	}
+	VsEntry* e = &s_vshadow[s];
+	e->key = k; e->gen = s_pgxpGen; e->vx = vx; e->vy = vy; e->vz = vz;
+}
+
+static const VsEntry* Vs_Get(const void* addr) {
+	uintptr_t k = (uintptr_t)addr;
+	unsigned s = ShadowHash(k);
+	for (int i = 0; i < 16; i++) {
+		const VsEntry* e = &s_vshadow[(s + i) & SHADOW_MASK];
+		if (e->key == k) return (e->gen == s_pgxpGen) ? e : nullptr;
+		if (e->key == 0) return nullptr;
+	}
+	return nullptr;
+}
+
+/* GTE store hook for the flashlight view-space FIFO (PsyX_GTE.cpp PGXP_StoreAddr,
+ * fired when g_PsyX_UsePerPixelFlashlight). */
+extern "C" void VShadow_Store(void* addr, float vx, float vy, float vz) {
+	Vs_Put(addr, vx, vy, vz);
+}
+
 /* Drawer copy hook (DuckStation CPU MOVE/SW): the game just did *dst = *src (a
  * vertex word moving from a GTE scratch slot into a prim field). Propagate the
  * shadow along the same path so the GPU resolves the prim-field address. If src
- * isn't tracked, leave dst absent -> clean affine. */
+ * isn't tracked, leave dst absent -> clean affine. The PGXP and flashlight
+ * shadows are independently gated, so each is byte-identical when its flag is
+ * off and both off => an immediate return (legacy path). */
 extern "C" void Shadow_Copy(void* dst, const void* src) {
-	if (!g_PsxUsePgxp) return;
-	const ShadowEntry* e = Shadow_Get(src);
-	if (!e) return;
-	Shadow_Put(dst, e->x, e->y, e->w, *(const unsigned*)dst);
+	if (g_PsxUsePgxp) {
+		const ShadowEntry* e = Shadow_Get(src);
+		if (e) Shadow_Put(dst, e->x, e->y, e->w, *(const unsigned*)dst);
+	}
+	if (g_PsyX_UsePerPixelFlashlight) {
+		const VsEntry* ve = Vs_Get(src);
+		if (ve) Vs_Put(dst, ve->vx, ve->vy, ve->vz);
+	}
 }
 
 /* Max |precise screen coord| (PSX units) PGXP will use before clamping the POSITION
@@ -325,6 +371,16 @@ static inline void PgxpFillVertex(GrVertex* v, const void* addr, int rawX, int r
 	} else {
 		v->ppx = (float)v->x; v->ppy = (float)v->y; v->ppw = 0.0f; s_pgxpMiss++;
 	}
+}
+
+/* Fill a GrVertex's view-space position (vsx/vsy/vsz) from the flashlight shadow
+ * at the vertex's prim-field address (same address-keyed lookup as PGXP). A miss
+ * leaves the memset-0 default, which the shader treats as "untracked" (vsz<=0,
+ * not lit). Called only when g_PsyX_UsePerPixelFlashlight. */
+static inline void VsFillVertex(GrVertex* v, const void* addr)
+{
+	const VsEntry* e = Vs_Get(addr);
+	if (e) { v->vsx = e->vx; v->vsy = e->vy; v->vsz = e->vz; }
 }
 
 DISPENV currentDispEnv;
@@ -656,6 +712,13 @@ void MakeVertexTriangle(GrVertex* vertex, VERTTYPE* p0, VERTTYPE* p1, VERTTYPE* 
 			vertex[0].ppw = vertex[1].ppw = vertex[2].ppw = 0.0f;
 	}
 
+	if (g_PsyX_UsePerPixelFlashlight)
+	{
+		VsFillVertex(&vertex[0], p0);
+		VsFillVertex(&vertex[1], p1);
+		VsFillVertex(&vertex[2], p2);
+	}
+
 	ScreenCoordsToEmulator(vertex, 3);
 }
 
@@ -695,6 +758,14 @@ void MakeVertexQuad(GrVertex* vertex, VERTTYPE* p0, VERTTYPE* p1, VERTTYPE* p2, 
 		if (vertex[0].ppw <= 0.0f || vertex[1].ppw <= 0.0f ||
 		    vertex[2].ppw <= 0.0f || vertex[3].ppw <= 0.0f)
 			vertex[0].ppw = vertex[1].ppw = vertex[2].ppw = vertex[3].ppw = 0.0f;
+	}
+
+	if (g_PsyX_UsePerPixelFlashlight)
+	{
+		VsFillVertex(&vertex[0], p0);
+		VsFillVertex(&vertex[1], p1);
+		VsFillVertex(&vertex[2], p2);
+		VsFillVertex(&vertex[3], p3);
 	}
 
 	ScreenCoordsToEmulator(vertex, 4);

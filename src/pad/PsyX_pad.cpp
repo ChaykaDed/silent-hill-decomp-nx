@@ -19,6 +19,7 @@ typedef struct
 
 	u_char*				padData;
 	bool				switchingAnalog;
+	u_short				hystWord[2]; /* PC: per-mapping Schmitt-trigger latch (analog->digital anti-chatter) */
 } PsyXController;
 
 int						g_cfg_controllerToSlotMapping[MAX_CONTROLLERS] = { -1, -1 };
@@ -41,7 +42,7 @@ static int				g_actBufLen[MAX_CONTROLLERS];
 const u_char*			g_sdlKeyboardState = NULL;
 
 u_short PsyX_Pad_UpdateKeyboardInput();
-void	PsyX_Pad_UpdateGameControllerInput(SDL_GameController* cont, LPPADRAW pad);
+void	PsyX_Pad_UpdateGameControllerInput(PsyXController* controller, LPPADRAW pad);
 
 // Initializes SDL controllers
 int PsyX_Pad_InitSystem()
@@ -222,7 +223,7 @@ void PsyX_Pad_InternalPadUpdates()
 		{
 			pad = (LPPADRAW)controller->padData;
 
-			PsyX_Pad_UpdateGameControllerInput(controller->gc, pad);
+			PsyX_Pad_UpdateGameControllerInput(controller, pad);
 
 			// Retransmit the registered actuator buffer (PSX pad driver
 			// behavior) so in-place value changes by the game reach SDL.
@@ -299,31 +300,63 @@ int GetControllerButtonState(SDL_GameController* cont, int buttonOrAxis)
 	return SDL_GameControllerGetButton(cont, (SDL_GameControllerButton)buttonOrAxis) * 32767;
 }
 
-/* Build the active-low 16-bit PSX button word from one controller mapping. */
-static u_short PsyX_Pad_BuildPadWord(SDL_GameController* cont, const PsyXControllerMapping& mapping)
+/* PC port: is an SDL game-controller button held on ANY attached physical
+ * controller? Read straight from SDL, NOT the keyboard-merged PSX pad word, so a
+ * keyboard key mapped to the same PSX button cannot trigger a controller-only
+ * action (e.g. the Change-Camera pad bind). sdlGameControllerButton < 0 = unbound. */
+extern "C" int PsyX_RawControllerButtonHeld(int sdlGameControllerButton)
+{
+	int i;
+	if (sdlGameControllerButton < 0)
+		return 0;
+	for (i = 0; i < MAX_CONTROLLERS; i++)
+	{
+		SDL_GameController* gc = g_controllers[i].gc;
+		if (gc && SDL_GameControllerGetAttached(gc) &&
+		    SDL_GameControllerGetButton(gc, (SDL_GameControllerButton)sdlGameControllerButton))
+			return 1;
+	}
+	return 0;
+}
+
+/* PC port: Schmitt-trigger digitization. An analog input (trigger/stick) mapped to a
+   button presses only above HIGH and releases only below LOW, so a value wavering near a
+   single 50% threshold can't chatter the digital bit -- that chatter double-fired the gun
+   on analog triggers. Digital buttons report 0/32767 and clear both thresholds (unaffected).
+   prevWord is the previous frame's post-hysteresis word for this mapping. */
+static inline bool PadBtnPressed(SDL_GameController* cont, int getter, u_short prevWord, u_short bit)
+{
+	int v = GetControllerButtonState(cont, getter);
+	bool was = (prevWord & bit) == 0; /* active-low: clear bit = was pressed */
+	return was ? (v > 8000) : (v > 24000);
+}
+
+/* Build the active-low 16-bit PSX button word from one controller mapping (with hysteresis). */
+static u_short PsyX_Pad_BuildPadWord(SDL_GameController* cont, const PsyXControllerMapping& mapping, u_short prevWord)
 {
 	u_short ret = 0xFFFF;
-	if (GetControllerButtonState(cont, mapping.gc_square)     > 16384) ret &= ~0x8000; //Square
-	if (GetControllerButtonState(cont, mapping.gc_circle)     > 16384) ret &= ~0x2000; //Circle
-	if (GetControllerButtonState(cont, mapping.gc_triangle)   > 16384) ret &= ~0x1000; //Triangle
-	if (GetControllerButtonState(cont, mapping.gc_cross)      > 16384) ret &= ~0x4000; //Cross
-	if (GetControllerButtonState(cont, mapping.gc_l1)         > 16384) ret &= ~0x400;  //L1
-	if (GetControllerButtonState(cont, mapping.gc_r1)         > 16384) ret &= ~0x800;  //R1
-	if (GetControllerButtonState(cont, mapping.gc_l2)         > 16384) ret &= ~0x100;  //L2
-	if (GetControllerButtonState(cont, mapping.gc_r2)         > 16384) ret &= ~0x200;  //R2
-	if (GetControllerButtonState(cont, mapping.gc_dpad_up)    > 16384) ret &= ~0x10;   //UP
-	if (GetControllerButtonState(cont, mapping.gc_dpad_down)  > 16384) ret &= ~0x40;   //DOWN
-	if (GetControllerButtonState(cont, mapping.gc_dpad_left)  > 16384) ret &= ~0x80;   //LEFT
-	if (GetControllerButtonState(cont, mapping.gc_dpad_right) > 16384) ret &= ~0x20;   //RIGHT
-	if (GetControllerButtonState(cont, mapping.gc_l3)         > 16384) ret &= ~0x2;    //L3
-	if (GetControllerButtonState(cont, mapping.gc_r3)         > 16384) ret &= ~0x4;    //R3
-	if (GetControllerButtonState(cont, mapping.gc_select)     > 16384) ret &= ~0x1;    //SELECT
-	if (GetControllerButtonState(cont, mapping.gc_start)      > 16384) ret &= ~0x8;    //START
+	if (PadBtnPressed(cont, mapping.gc_square,     prevWord, 0x8000)) ret &= ~0x8000; //Square
+	if (PadBtnPressed(cont, mapping.gc_circle,     prevWord, 0x2000)) ret &= ~0x2000; //Circle
+	if (PadBtnPressed(cont, mapping.gc_triangle,   prevWord, 0x1000)) ret &= ~0x1000; //Triangle
+	if (PadBtnPressed(cont, mapping.gc_cross,      prevWord, 0x4000)) ret &= ~0x4000; //Cross
+	if (PadBtnPressed(cont, mapping.gc_l1,         prevWord, 0x400))  ret &= ~0x400;  //L1
+	if (PadBtnPressed(cont, mapping.gc_r1,         prevWord, 0x800))  ret &= ~0x800;  //R1
+	if (PadBtnPressed(cont, mapping.gc_l2,         prevWord, 0x100))  ret &= ~0x100;  //L2
+	if (PadBtnPressed(cont, mapping.gc_r2,         prevWord, 0x200))  ret &= ~0x200;  //R2
+	if (PadBtnPressed(cont, mapping.gc_dpad_up,    prevWord, 0x10))   ret &= ~0x10;   //UP
+	if (PadBtnPressed(cont, mapping.gc_dpad_down,  prevWord, 0x40))   ret &= ~0x40;   //DOWN
+	if (PadBtnPressed(cont, mapping.gc_dpad_left,  prevWord, 0x80))   ret &= ~0x80;   //LEFT
+	if (PadBtnPressed(cont, mapping.gc_dpad_right, prevWord, 0x20))   ret &= ~0x20;   //RIGHT
+	if (PadBtnPressed(cont, mapping.gc_l3,         prevWord, 0x2))    ret &= ~0x2;    //L3
+	if (PadBtnPressed(cont, mapping.gc_r3,         prevWord, 0x4))    ret &= ~0x4;    //R3
+	if (PadBtnPressed(cont, mapping.gc_select,     prevWord, 0x1))    ret &= ~0x1;    //SELECT
+	if (PadBtnPressed(cont, mapping.gc_start,      prevWord, 0x8))    ret &= ~0x8;    //START
 	return ret;
 }
 
-void PsyX_Pad_UpdateGameControllerInput(SDL_GameController* cont, LPPADRAW pad)
+void PsyX_Pad_UpdateGameControllerInput(PsyXController* controller, LPPADRAW pad)
 {
+	SDL_GameController* cont = controller->gc;
 	short leftX, leftY, rightX, rightY;
 	u_short ret;
 
@@ -341,8 +374,11 @@ void PsyX_Pad_UpdateGameControllerInput(SDL_GameController* cont, LPPADRAW pad)
 	/* Primary binds AND the secondary (second-button-per-action) binds: active-low,
 	 * so an action reads pressed if EITHER mapping clears its bit. Analog sticks come
 	 * from the primary mapping's axes only. */
-	ret  = PsyX_Pad_BuildPadWord(cont, g_cfg_controllerMapping);
-	ret &= PsyX_Pad_BuildPadWord(cont, g_cfg_controllerMapping2);
+	u_short w1 = PsyX_Pad_BuildPadWord(cont, g_cfg_controllerMapping,  controller->hystWord[0]);
+	u_short w2 = PsyX_Pad_BuildPadWord(cont, g_cfg_controllerMapping2, controller->hystWord[1]);
+	controller->hystWord[0] = w1;
+	controller->hystWord[1] = w2;
+	ret = w1 & w2;
 
 	leftX = GetControllerButtonState(cont, g_cfg_controllerMapping.gc_axis_left_x);
 	leftY = GetControllerButtonState(cont, g_cfg_controllerMapping.gc_axis_left_y);

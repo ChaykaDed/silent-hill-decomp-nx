@@ -144,6 +144,14 @@ typedef struct
 	 * otherwise. Appended at the END so all existing field offsets are unchanged
 	 * — the shader only reads it under the u_flashlightOn uniform (off = unused). */
 	float		nx, ny, nz;
+
+	/* Per-pixel flashlight (optional): view-space (camera-space) position, the
+	 * GTE RTPS MAC1/MAC2/MAC3 of this vertex, propagated through the same
+	 * address-keyed shadow path as PGXP and written only when
+	 * g_PsyX_UsePerPixelFlashlight is on (memset 0 otherwise). The fragment
+	 * shader reads it only under u_flashlightOn, and gates on vsz>0 so untracked
+	 * (zero) verts and 2D prims are never lit. */
+	float		vsx, vsy, vsz;
 } GrVertex;
 #pragma pack(pop)
 
@@ -156,6 +164,7 @@ typedef enum
 	a_extra,
 	a_pgxp,
 	a_normal,
+	a_viewpos,
 } ShaderAttrib;
 
 typedef enum

@@ -286,7 +286,14 @@ int Lm_H(long long value, int sf) {
  * the GTE just produced. Updated only when g_PsxUsePgxp. */
 static float s_pgxpFifoX[3], s_pgxpFifoY[3], s_pgxpFifoW[3];
 
+/* Parallel FIFO for the per-pixel flashlight: the GTE RTPS view-space (camera-
+ * space) position MAC1/MAC2/MAC3 of each projected vertex. Mirrors the PGXP
+ * SXY FIFO so the store hook can resolve a destination address to the view
+ * position the GTE just produced. Updated only when g_PsyX_UsePerPixelFlashlight. */
+static float s_vsFifoX[3], s_vsFifoY[3], s_vsFifoZ[3];
+
 extern "C" int g_PgxpUseUnquantizedDepth; /* defined in PsyX_GPU.cpp */
+extern "C" void VShadow_Store(void* addr, float x, float y, float z); /* PsyX_GPU.cpp */
 
 /* Called from the gte_stsxy* store macros (only when g_PsxUsePgxp): the macro
  * just wrote the integer screen coord for FIFO slot `slot` (SXY0=0, SXY1=1,
@@ -296,7 +303,14 @@ extern "C" void Shadow_Store(void* addr, float x, float y, float w, unsigned val
 extern "C" void PGXP_StoreAddr(void* addr, int slot)
 {
 	if ((unsigned)slot > 2u) return;
-	Shadow_Store(addr, s_pgxpFifoX[slot], s_pgxpFifoY[slot], s_pgxpFifoW[slot], *(unsigned*)addr);
+	/* The gte_stsxy* macros now call this when (g_PsxUsePgxp ||
+	 * g_PsyX_UsePerPixelFlashlight), so each store is independently gated:
+	 * PGXP unchanged when its flag is off, flashlight a no-op when its flag is
+	 * off, both off => not called at all (byte-identical legacy path). */
+	if (g_PsxUsePgxp)
+		Shadow_Store(addr, s_pgxpFifoX[slot], s_pgxpFifoY[slot], s_pgxpFifoW[slot], *(unsigned*)addr);
+	if (g_PsyX_UsePerPixelFlashlight)
+		VShadow_Store(addr, s_vsFifoX[slot], s_vsFifoY[slot], s_vsFifoZ[slot]);
 }
 
 int GTE_RotTransPers(int idx, int lm)
@@ -358,6 +372,16 @@ int GTE_RotTransPers(int idx, int lm)
 		s_pgxpFifoX[0] = s_pgxpFifoX[1]; s_pgxpFifoX[1] = s_pgxpFifoX[2]; s_pgxpFifoX[2] = (float)fx;
 		s_pgxpFifoY[0] = s_pgxpFifoY[1]; s_pgxpFifoY[1] = s_pgxpFifoY[2]; s_pgxpFifoY[2] = (float)fy;
 		s_pgxpFifoW[0] = s_pgxpFifoW[1]; s_pgxpFifoW[1] = s_pgxpFifoW[2]; s_pgxpFifoW[2] = pgxpW;
+	}
+
+	/* Flashlight view-space FIFO: stash this vertex's camera-space position
+	 * (RTPS MAC1/MAC2/MAC3, same units the light is pushed in). Mirrors the SXY
+	 * FIFO shift above so gte_stsxy* can resolve address->view-pos. Off = no cost. */
+	if (g_PsyX_UsePerPixelFlashlight)
+	{
+		s_vsFifoX[0] = s_vsFifoX[1]; s_vsFifoX[1] = s_vsFifoX[2]; s_vsFifoX[2] = (float)C2_MAC1;
+		s_vsFifoY[0] = s_vsFifoY[1]; s_vsFifoY[1] = s_vsFifoY[2]; s_vsFifoY[2] = (float)C2_MAC2;
+		s_vsFifoZ[0] = s_vsFifoZ[1]; s_vsFifoZ[1] = s_vsFifoZ[2]; s_vsFifoZ[2] = (float)C2_MAC3;
 	}
 
 	return h_over_sz3;

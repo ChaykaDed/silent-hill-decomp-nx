@@ -69,6 +69,37 @@ extern int							g_cfg_affineTextures;
 extern int							g_cfg_psxDither;
 extern int							g_cfg_pgxpTextureCorrection;
 
+/* PC port: MSAA sample count for the default framebuffer (0 = off, 2/4/8). Must
+ * be set BEFORE PsyX_Initialise — it drives the SDL multisample GL attributes at
+ * context-creation time. */
+extern int							g_cfg_msaaSamples;
+
+/* PC port: full-screen post-process look (0 = off, 1.. = a built-in filter).
+ * Safe to change at runtime (launcher config + F2 in-game cycle). */
+extern int							g_cfg_postProcess;
+
+/* PC port: tone-map operator on the final image (0=off,1=Reinhard,2=ACES,
+ * 3=Filmic). Runtime-settable (launcher config + F3 in-game cycle). */
+extern int							g_cfg_tonemap;
+
+/* PC port: per-pixel (fragment-shader) flashlight cone. Runtime-settable
+ * (launcher config + F4 in-game toggle). */
+extern int							g_PsyX_UsePerPixelFlashlight;
+
+/* PC port: per-pixel flashlight cone parameters, pushed once per frame by game
+ * code (bodyprog world-lighting setup). Position and direction are in VIEW
+ * (camera) space — the same space as the per-vertex GrVertex.vsx/vsy/vsz the GTE
+ * captures. The shader only consumes these when (g_PsyX_UsePerPixelFlashlight &&
+ * g_PsyX_FlashlightActive). g_PsyX_FlashlightActive defaults 0 so nothing is lit
+ * until the game pushes a valid light for the frame. */
+extern int							g_PsyX_FlashlightActive;     /* 1 = push light this frame */
+extern float						g_PsyX_FlashlightPos[3];     /* view-space xyz */
+extern float						g_PsyX_FlashlightDir[3];     /* view-space unit dir the cone points along */
+extern float						g_PsyX_FlashlightColor[3];   /* additive RGB at full strength */
+extern float						g_PsyX_FlashlightInnerCos;   /* cos(inner half-angle) */
+extern float						g_PsyX_FlashlightOuterCos;   /* cos(outer half-angle) */
+extern float						g_PsyX_FlashlightRange;      /* distance falloff, view-space units */
+
 /* PC port (Silent Hill): runtime master gate for PGXP perspective correction.
  * Set this from game code AFTER PsyX_Initialise. When the binary is built with
  * USE_PGXP=1 but this is 0, the prim emitters write a_zw=0 so the shader takes
