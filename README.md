@@ -34,13 +34,13 @@ Drop a Silent Hill PS1 BIN dump in `gamedata/` next to the NRO. On Ryujinx that'
 
 ## How It Works
 
-The renderer uses GLES 3.0 through native `GLES3/gl3.h` headers instead of glad function pointers — the glad loader was generated for desktop GL 4.3 and didn't play nice with GLES 3.0 at runtime. The GL driver is Mesa NVN over EGL.
+The renderer uses GLES 3.0 through native `GLES3/gl3.h` headers instead of glad function pointers — the glad loader was generated for desktop GL 4.3 and didn't play nice with GLES 3.0 at runtime. The GL driver is Mesa over EGL.
 
 FMV video runs through the game's existing decoder with a shader version fix (`#version 300 es` for GLES). Audio uses audout directly instead of SDL audio, since OpenAL already claims the only SDL audio device available on Switch.
 
 ## Status
 
-Links clean: 197/197 targets, 32 MB NRO. Boots in Ryujinx — GLES context comes up, logos display, main menu works, FMVs play with sound. In-game rendering and gameplay still need testing.
+Links clean: 197/197 targets, NRO. Boots in Ryujinx — GLES context comes up, logos display, main menu works, FMVs play with sound. In-game rendering and gameplay still need testing.
 
 ## Credits
 
