@@ -25,7 +25,7 @@ if %errorlevel% neq 0 exit /b %errorlevel%
 echo === NRO ===
 elf2nro SilentHillPC SilentHillPC.nro --nacp=SilentHillPC.nacp
 echo === Icon ===
-python3 ..\maker.py --nro SilentHillPC.nro --icon ..\SH1icon.png
+python3 ..\maker.py --nro SilentHillPC.nro --icon ..\SH1icon.png --author "ChaykaDed"
 echo === Done: %BUILD_DIR%\SilentHillPC.nro ===
 exit /b
 

@@ -71,7 +71,7 @@ case "$MODE" in
         # Embed icon if available
         if [ -f "${SCRIPT_DIR}/SH1icon.png" ]; then
             elf2nro SilentHillPC SilentHillPC.nro --nacp=SilentHillPC.nacp
-            python3 "${SCRIPT_DIR}/maker.py" --nro "${BUILD_DIR}/SilentHillPC.nro" --icon "${SCRIPT_DIR}/SH1icon.png"
+            python3 "${SCRIPT_DIR}/maker.py" --nro "${BUILD_DIR}/SilentHillPC.nro" --icon "${SCRIPT_DIR}/SH1icon.png" --author "ChaykaDed"
         fi
         echo -e "${GREEN}Output: ${BUILD_DIR}${NC}"
         ;;
@@ -97,7 +97,7 @@ case "$MODE" in
         # Embed icon if available
         if [ -f "${SCRIPT_DIR}/SH1icon.png" ]; then
             elf2nro SilentHillPC SilentHillPC.nro --nacp=SilentHillPC.nacp
-            python3 "${SCRIPT_DIR}/maker.py" --nro "${BUILD_DIR}/SilentHillPC.nro" --icon "${SCRIPT_DIR}/SH1icon.png"
+            python3 "${SCRIPT_DIR}/maker.py" --nro "${BUILD_DIR}/SilentHillPC.nro" --icon "${SCRIPT_DIR}/SH1icon.png" --author "ChaykaDed"
         fi
         echo -e "${GREEN}Output: ${BUILD_DIR}${NC}"
         ;;
