@@ -1,26 +1,21 @@
-"""Inject icon into NRO using PIL (pillow) for image handling.
+"""Embed icon into NRO by writing into ASET header area.
 
-Reads the NRO, embeds the icon PNG data into the asset section
-icon slot, and updates the icon size in the asset header.
+NRO has two asset systems:
+1. Legacy header (first 0x20 bytes of asset section) — offsets relative to asset_off
+2. ASET header (at rel offset stored at NRO+0x34) — modern header with
+   icon/NACP/romfs offsets relative to ASET itself.
+
+elf2nro places icon/NACP data after the ASET header but doesn't fill
+in the ASET header fields. This script corrects that.
 """
 import struct, sys, os
-from PIL import Image
-
-PAGE = 0x1000
 
 def main():
     if len(sys.argv) < 3:
         print(f"Usage: {sys.argv[0]} <nro> <icon.png>")
         sys.exit(1)
 
-    nro_path = sys.argv[1]
-    icon_path = sys.argv[2]
-
-    # Validate icon
-    img = Image.open(icon_path)
-    if img.size != (256, 256):
-        print(f"WARNING: icon is {img.size[0]}x{img.size[1]}, expected 256x256")
-    del img
+    nro_path, icon_path = sys.argv[1], sys.argv[2]
 
     with open(icon_path, 'rb') as f:
         icon_data = f.read()
@@ -28,42 +23,43 @@ def main():
     with open(nro_path, 'rb') as f:
         data = bytearray(f.read())
 
-    asset_off = struct.unpack('<I', data[0x30:0x34])[0]
-    asset_sz  = struct.unpack('<I', data[0x34:0x38])[0]
+    asset_off    = struct.unpack('<I', data[0x30:0x34])[0]
+    aset_off_rel = struct.unpack('<I', data[0x34:0x38])[0]
+    aset_off     = asset_off + aset_off_rel
 
-    # Find the icon slot in the asset header
-    icon_slot_off = struct.unpack_from('<I', data, asset_off + 0x10)[0]
+    print(f"Asset: 0x{asset_off:X}  ASET: 0x{aset_off:X}")
 
-    # Place icon at the end of the asset section (after last valid data)
-    # Find end of valid data
-    last = asset_sz - 1
-    while last > 0 and data[asset_off + last] == 0:
-        last -= 1
-    data_end = last + 1  # first byte past valid data
+    if data[aset_off:aset_off+4] != b'ASET':
+        print("ERROR: No ASET magic!")
+        sys.exit(1)
 
-    # Icon goes here, aligned to 4 bytes
-    icon_place = (data_end + 3) & ~3
+    # Check if icon already present after ASET header
+    png_sig = b'\x89PNG\r\n\x1a\n'
+    icon_in_file = data.find(png_sig, aset_off)
 
-    new_asset_sz = icon_place + len(icon_data)
-    new_asset_sz = (new_asset_sz + PAGE - 1) // PAGE * PAGE
+    if icon_in_file >= 0 and icon_in_file < aset_off + 0x100000:
+        icon_data_off = icon_in_file - aset_off
+        print(f"Icon already at ASET+0x{icon_data_off:X}")
+    else:
+        icon_data_off = 0x38  # standard: right after ASET header
+        end_needed = aset_off + icon_data_off + len(icon_data)
+        if end_needed > len(data):
+            data.extend(b'\x00' * (end_needed - len(data)))
+        data[aset_off + icon_data_off:aset_off + icon_data_off + len(icon_data)] = icon_data
+        print(f"Icon written at ASET+0x{icon_data_off:X}")
 
-    # Expand file if needed
-    if asset_off + new_asset_sz > len(data):
-        data.extend(b'\x00' * (asset_off + new_asset_sz - len(data)))
+    # Update ASET header (icon offset at +0x08, icon size at +0x0C)
+    struct.pack_into('<II', data, aset_off + 0x08, icon_data_off, len(icon_data))
 
-    # Write icon data
-    data[asset_off + icon_place:asset_off + icon_place + len(icon_data)] = icon_data
-
-    # Update asset header
-    struct.pack_into('<I', data, 0x34, new_asset_sz)
-    struct.pack_into('<II', data, asset_off + 0x10, icon_place, len(icon_data))
+    # Update legacy header (icon offset at asset+0x10, size at asset+0x14)
+    legacy_icon_off = aset_off_rel + icon_data_off
+    struct.pack_into('<II', data, asset_off + 0x10, legacy_icon_off, len(icon_data))
 
     with open(nro_path, 'wb') as f:
         f.write(data)
 
-    print(f"Icon: slot=0x{icon_slot_off:X} -> placed at 0x{icon_place:X}")
-    print(f"Asset sz: 0x{asset_sz:X} -> 0x{new_asset_sz:X}")
-    print(f"Icon size: {len(icon_data)} bytes")
+    print(f"Icon: ASET+0x{icon_data_off:X} sz={len(icon_data)}")
+    print(f"Legacy: asset+0x{legacy_icon_off:X}")
     print("Done")
 
 if __name__ == "__main__":
