@@ -192,11 +192,16 @@ void Gfx_2dEffectsDraw(void) // 0x800550D0
             g_PsyX_FlashlightPos[1] = (float)vy;
             g_PsyX_FlashlightPos[2] = (float)vz;
 
-            /* Beam axis = camera forward (+Z) in view space; the cone follows the
-             * camera like a held flashlight. (N.L / field_58 direction deferred.) */
-            g_PsyX_FlashlightDir[0] = 0.0f;
-            g_PsyX_FlashlightDir[1] = 0.0f;
-            g_PsyX_FlashlightDir[2] = 1.0f;
+            /* Beam direction = the flashlight's world direction (field_58 — the same
+             * vector the per-vertex "ambient" flashlight uses, so it turns with Harry's
+             * facing) rotated into view space. Camera +Z only tracked his position, so
+             * the cone never turned when he did. Rotation only (it's a direction). */
+            s32 fdx = g_WorldEnvWork.field_58.vx;
+            s32 fdy = g_WorldEnvWork.field_58.vy;
+            s32 fdz = g_WorldEnvWork.field_58.vz;
+            g_PsyX_FlashlightDir[0] = (float)(s32)(((s64)GsWSMATRIX.m[0][0] * fdx + (s64)GsWSMATRIX.m[0][1] * fdy + (s64)GsWSMATRIX.m[0][2] * fdz) >> 12);
+            g_PsyX_FlashlightDir[1] = (float)(s32)(((s64)GsWSMATRIX.m[1][0] * fdx + (s64)GsWSMATRIX.m[1][1] * fdy + (s64)GsWSMATRIX.m[1][2] * fdz) >> 12);
+            g_PsyX_FlashlightDir[2] = (float)(s32)(((s64)GsWSMATRIX.m[2][0] * fdx + (s64)GsWSMATRIX.m[2][1] * fdy + (s64)GsWSMATRIX.m[2][2] * fdz) >> 12);
 
             g_PsyX_FlashlightActive = 1;
         }
@@ -396,18 +401,10 @@ void func_80055330(u8 arg0, s32 arg1, u8 arg2, s32 tintR, s32 tintG, s32 tintB, 
         }
     }
 
-    /* When the per-pixel flashlight cone provides the flashlight, neutralize the
-     * per-vertex directional flashlight (field_2C is the light-color matrix loaded
-     * via SetColorMatrix) so the cone REPLACES it instead of stacking on top — that
-     * double-light was the blown-out wash. Flat ambient (field_24..26 / worldTint)
-     * stays, so the room keeps its base darkness and the cone reads as the beam. */
-    {
-        extern int g_PsyX_UsePerPixelFlashlight;
-        if (g_PsyX_UsePerPixelFlashlight && g_SysWork.field_2388.isFlashlightOn_15)
-        {
-            memset(&g_WorldEnvWork.field_2C, 0, sizeof(g_WorldEnvWork.field_2C));
-        }
-    }
+    /* NOTE: do NOT zero field_2C here for the per-pixel cone. The shader already
+     * dims the whole per-vertex-lit result to a dark base, so zeroing the directional
+     * light is redundant AND harmful: the character draw forces field_0=1 (point-light
+     * path) and reads field_2C, so a zeroed matrix renders Harry solid black. */
 #endif
 }
 

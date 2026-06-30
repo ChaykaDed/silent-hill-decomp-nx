@@ -25,6 +25,9 @@ s_PcConfig g_PcConfig = {
     .postProcess    = 0, /* 0=off, 1.. = post-process look */
     .tonemap        = 0, /* 0=off, 1=Reinhard, 2=ACES, 3=Filmic */
     .perPixelFlashlight = 0, /* 0=per-vertex (PSX), 1=per-pixel flashlight cone */
+    .flashlightIntensity  = 1.90f, /* per-pixel flashlight cone brightness scale, 0..3 */
+    .postProcessIntensity = 1.0f, /* post-process effect mix, 0..1 */
+    .tonemapIntensity     = 1.0f, /* tone-map mix, 0..1 */
     .enableDebugLog = 0, /* 0=no SilentHill.log, 1=write SilentHill.log (debug builds) */
     .allowDebugControls = 0, /* 0=off (default), 1=enable dev/cheat keys */
     .controllerMovement = 2, /* 0=analog, 1=dpad, 2=both */
@@ -44,7 +47,7 @@ s_PcConfig g_PcConfig = {
         .keyUp = "Up", .keyDown = "Down", .keyLeft = "Left", .keyRight = "Right",
         .keyCross = "C", .keyCircle = "V", .keyTriangle = "Z", .keySquare = "X",
         .keyL1 = "A", .keyR1 = "D", .keyL2 = "Right Shift", .keyR2 = "Left Shift",
-        .keyL3 = "[", .keyR3 = "]", .keyStart = "Return", .keySelect = "Space",
+        .keyL3 = "NONE", .keyR3 = "NONE", .keyStart = "Return", .keySelect = "Space",
         .padCross = "a", .padCircle = "b", .padTriangle = "y", .padSquare = "x",
         .padL1 = "leftshoulder", .padR1 = "rightshoulder",
         .padL2 = "lefttrigger", .padR2 = "righttrigger",
@@ -58,7 +61,7 @@ s_PcConfig g_PcConfig = {
         .keyUp = "W", .keyDown = "S", .keyLeft = "Left", .keyRight = "Right",
         .keyCross = "Mouse1", .keyCircle = "F", .keyTriangle = "Tab", .keySquare = "Left Shift",
         .keyL1 = "A", .keyR1 = "D", .keyL2 = "NONE", .keyR2 = "Mouse2",
-        .keyL3 = "[", .keyR3 = "]", .keyStart = "Return", .keySelect = "Space",
+        .keyL3 = "NONE", .keyR3 = "NONE", .keyStart = "Return", .keySelect = "Space",
         .keyCross2 = "E",
         .padCross = "righttrigger", .padCircle = "b", .padTriangle = "y", .padSquare = "leftshoulder",
         .padL1 = "NONE", .padR1 = "NONE",
@@ -315,6 +318,27 @@ void PcConfig_Load(const char* path)
         else if (strcmp(key, "per_pixel_flashlight") == 0)
         {
             g_PcConfig.perPixelFlashlight = (atoi(value) != 0);
+        }
+        else if (strcmp(key, "flashlight_intensity") == 0)
+        {
+            float v = (float)atof(value);
+            if (v < 0.0f) v = 0.0f;
+            if (v > 3.0f) v = 3.0f;
+            g_PcConfig.flashlightIntensity = v;
+        }
+        else if (strcmp(key, "post_process_intensity") == 0)
+        {
+            float v = (float)atof(value);
+            if (v < 0.0f) v = 0.0f;
+            if (v > 1.0f) v = 1.0f;
+            g_PcConfig.postProcessIntensity = v;
+        }
+        else if (strcmp(key, "tonemap_intensity") == 0)
+        {
+            float v = (float)atof(value);
+            if (v < 0.0f) v = 0.0f;
+            if (v > 1.0f) v = 1.0f;
+            g_PcConfig.tonemapIntensity = v;
         }
         else if (strcmp(key, "enable_debug_log") == 0)
         {
