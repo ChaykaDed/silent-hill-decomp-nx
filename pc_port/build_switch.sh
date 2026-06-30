@@ -70,7 +70,8 @@ case "$MODE" in
         echo -e "${GREEN}✓ Build complete!${NC}"
         # Embed icon if available
         if [ -f "${SCRIPT_DIR}/SH1icon.png" ]; then
-            python3 "${SCRIPT_DIR}/embed_icon.py" "${BUILD_DIR}/SilentHillPC.nro" "${SCRIPT_DIR}/SH1icon.png"
+            elf2nro SilentHillPC SilentHillPC.nro --nacp=SilentHillPC.nacp
+            python3 "${SCRIPT_DIR}/maker.py" --nro "${BUILD_DIR}/SilentHillPC.nro" --icon "${SCRIPT_DIR}/SH1icon.png"
         fi
         echo -e "${GREEN}Output: ${BUILD_DIR}${NC}"
         ;;
@@ -93,6 +94,12 @@ case "$MODE" in
             -G Ninja
         cmake --build . --config Release
         echo -e "${GREEN}✓ Rebuild complete!${NC}"
+        # Embed icon if available
+        if [ -f "${SCRIPT_DIR}/SH1icon.png" ]; then
+            elf2nro SilentHillPC SilentHillPC.nro --nacp=SilentHillPC.nacp
+            python3 "${SCRIPT_DIR}/maker.py" --nro "${BUILD_DIR}/SilentHillPC.nro" --icon "${SCRIPT_DIR}/SH1icon.png"
+        fi
+        echo -e "${GREEN}Output: ${BUILD_DIR}${NC}"
         ;;
     
     *)
