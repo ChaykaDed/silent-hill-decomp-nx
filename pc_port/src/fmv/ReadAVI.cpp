@@ -38,8 +38,6 @@
 
 #define ZEROIZE(x) {memset(&x, 0, sizeof(x));}
 
-using namespace std;
-
 ReadAVI::chunk_type_int_t ReadAVI::chunk_types[ChunkTypesCnt] = {
     {"db", ctype_uncompressed_video_frame},
     {"dc", ctype_compressed_video_frame},
@@ -54,14 +52,15 @@ ReadAVI::ReadAVI(const char* filename)
     data_buf_size = 0;
     movi_offset = 0;
     fileSize = 0;
+    mFile = NULL;
 
-    inFile.open(filename, ios_base::ate | ios_base::in | ios_base::binary);
-    if (!inFile.is_open())
+    mFile = fopen(filename, "rb");
+    if (!mFile)
         return;
 
-    fileSize = (long)inFile.tellg();
-    inFile.close();
-    inFile.open(filename, ios_base::in | ios_base::binary);
+    fseek(mFile, 0, SEEK_END);
+    fileSize = ftell(mFile);
+    fseek(mFile, 0, SEEK_SET);
 
     try {
         parse_riff();
@@ -80,8 +79,10 @@ ReadAVI::~ReadAVI()
 
 void ReadAVI::free()
 {
-    if (inFile.is_open())
-        inFile.close();
+    if (mFile) {
+        fclose(mFile);
+        mFile = NULL;
+    }
     delete[] stream_format_vid.palette;
     stream_format_vid.palette = NULL;
     delete[] data_buf;
@@ -106,7 +107,7 @@ int ReadAVI::GetFrameFromIndex(frame_entry_t* frame_entry)
         if (index_entries[i].type & frame_entry->type) {
             check_data_buf(index_entries[i].dwChunkLength);
             try {
-                inFile.seekg(index_entries[i].dwChunkOffset, ios_base::beg);
+                fseek(mFile, index_entries[i].dwChunkOffset, SEEK_SET);
                 read_chars_bin(data_buf, index_entries[i].dwChunkLength);
             }
             catch (...) {
@@ -238,23 +239,23 @@ int ReadAVI::parse_hdrl_list()
     chunk_size = read_int();
     read_chars(chunk_type, 4);
 
-    end_of_chunk = chunk_size - 4 + (int)inFile.tellg();
+    end_of_chunk = chunk_size - 4 + (int)ftell(mFile);
 
     if (strcmp(chunk_id, "JUNK") == 0) {
-        inFile.seekg(end_of_chunk, ios_base::beg);
+        fseek(mFile, end_of_chunk, SEEK_SET);
         return 0;
     }
 
-    while (inFile.tellg() < end_of_chunk) {
+    while (ftell(mFile) < end_of_chunk) {
         read_chars(chunk_type, 4);
         chunk_size = read_int();
-        next_chunk = chunk_size + (int)inFile.tellg();
+        next_chunk = chunk_size + (int)ftell(mFile);
 
         if (strcmp("strh", chunk_type) == 0) {
-            long marker = (long)inFile.tellg();
+            long marker = (long)ftell(mFile);
             char buffer[5];
             read_chars(buffer, 4);
-            inFile.seekg(marker, ios_base::beg);
+            fseek(mFile, marker, SEEK_SET);
 
             if (strcmp(buffer, "vids") == 0) {
                 stream_type = 0;
@@ -272,10 +273,10 @@ int ReadAVI::parse_hdrl_list()
                 read_stream_format_auds();
         }
 
-        inFile.seekg(next_chunk, ios_base::beg);
+        fseek(mFile, next_chunk, SEEK_SET);
     }
 
-    inFile.seekg(end_of_chunk, ios_base::beg);
+    fseek(mFile, end_of_chunk, SEEK_SET);
     return 0;
 }
 
@@ -285,12 +286,12 @@ int ReadAVI::parse_movi(int size)
     index_entry_t index_entry;
 
     do {
-        long offset = (long)inFile.tellg();
+        long offset = (long)ftell(mFile);
         read_chars(chunk_id, 4);
         index_entry.stream_num = decodeCkid(chunk_id, &index_entry.type);
 
         if (index_entry.stream_num < 0) {
-            inFile.seekg(offset - 4, ios_base::beg);
+            fseek(mFile, offset - 4, SEEK_SET);
             break;
         }
 
@@ -301,9 +302,9 @@ int ReadAVI::parse_movi(int size)
             index_entries.push_back(index_entry);
         }
 
-        long end_of_chunk = index_entry.dwChunkLength + inFile.tellg();
+        long end_of_chunk = index_entry.dwChunkLength + ftell(mFile);
         end_of_chunk = (end_of_chunk + 1) & ~1;
-        inFile.seekg(end_of_chunk, ios_base::beg);
+        fseek(mFile, end_of_chunk, SEEK_SET);
 
         int blk_size = (int)(end_of_chunk - offset);
         size -= blk_size;
@@ -317,18 +318,18 @@ int ReadAVI::parse_hdrl(unsigned int size)
     char chunk_id[5];
     int chunk_size;
     int end_of_chunk;
-    long offset = (long)inFile.tellg();
+    long offset = (long)ftell(mFile);
 
     read_chars(chunk_id, 4);
     chunk_size = read_int();
 
-    end_of_chunk = chunk_size + (int)inFile.tellg();
+    end_of_chunk = chunk_size + (int)ftell(mFile);
     if ((end_of_chunk % 4) != 0)
         end_of_chunk = end_of_chunk + (4 - (end_of_chunk % 4));
 
     read_avi_header();
 
-    while (inFile.tellg() < offset + (long)size - 4)
+    while (ftell(mFile) < offset + (long)size - 4)
         parse_hdrl_list();
 
     return 0;
@@ -354,13 +355,13 @@ int ReadAVI::parse_riff()
     if (strcmp("RIFF", chunk_id) != 0 || strcmp("AVI ", chunk_type) != 0)
         return 1;
 
-    end_of_chunk = chunk_size - 4 + (int)inFile.tellg();
+    end_of_chunk = chunk_size - 4 + (int)ftell(mFile);
 
-    while (inFile.tellg() < end_of_chunk) {
-        long offset = (long)inFile.tellg();
+    while (ftell(mFile) < end_of_chunk) {
+        long offset = (long)ftell(mFile);
         read_chars(chunk_id, 4);
         chunk_size = read_int();
-        end_of_subchunk = chunk_size + (int)inFile.tellg();
+        end_of_subchunk = chunk_size + (int)ftell(mFile);
 
         if (strcmp("JUNK", chunk_id) == 0 || strcmp("PAD ", chunk_id) == 0) {
             chunk_type[0] = 0;
@@ -378,13 +379,13 @@ int ReadAVI::parse_riff()
             movi_offset = (long)offset;
             parse_movi(chunk_size);
         } else if (strcmp("idx1", chunk_id) == 0) {
-            inFile.seekg(inFile.tellg() - std::streamoff(4), ios_base::beg);
+            fseek(mFile, ftell(mFile) - 4, SEEK_SET);
             parse_idx1(chunk_size);
         } else {
             if (chunk_size == 0) break;
         }
 
-        inFile.seekg(end_of_subchunk, ios_base::beg);
+        fseek(mFile, end_of_subchunk, SEEK_SET);
     }
 
     if (stream_format_vid.palette) {
@@ -397,24 +398,24 @@ int ReadAVI::parse_riff()
 int ReadAVI::read_int()
 {
     unsigned char buf[4];
-    inFile.read((char*)buf, 4);
+    fread(buf, 1, 4, mFile);
     return buf[0] | (buf[1] << 8) | (buf[2] << 16) | (buf[3] << 24);
 }
 
 int ReadAVI::read_word()
 {
     unsigned char buf[2];
-    inFile.read((char*)buf, 2);
+    fread(buf, 1, 2, mFile);
     return buf[0] | (buf[1] << 8);
 }
 
 void ReadAVI::read_chars(char* s, int count)
 {
-    inFile.read(s, count);
+    fread(s, 1, count, mFile);
     s[count] = 0;
 }
 
 void ReadAVI::read_chars_bin(unsigned char* s, int count)
 {
-    inFile.read((char*)s, count);
+    fread(s, 1, count, mFile);
 }

@@ -233,6 +233,7 @@ static const FmvFileEntry s_fmvFiles[] = {
     { "Z4_01590", 0x38940,  1590 },  /* 27 */
     { "ZC_14392", 0x38f76, 14392 },  /* 28 */
     { "ZZ_14239", 0x3c7ae, 14239 },  /* 29 */
+    { "PS1_INTRO", 0, 0 },           /* 30 - custom PS1 boot splash (AVI-only) */
 };
 
 #define FMV_FILE_COUNT (sizeof(s_fmvFiles) / sizeof(s_fmvFiles[0]))
@@ -803,6 +804,186 @@ static int PollSkipOrQuit(int* out_quit)
             PsyX_Pad_SkipButtonHeld());
 }
 
+static int PlayAviPath(const char* filepath, int max_frames)
+{
+    FMV_Init();
+
+    ReadAVI readAVI(filepath);
+    if (!readAVI.IsOpen()) {
+        printf("[FMV] Failed to open AVI: %s\n", filepath);
+        return -1;
+    }
+
+    ReadAVI::avi_header_t avi_header = readAVI.GetAviHeader();
+    ReadAVI::stream_format_t stream_format = readAVI.GetVideoFormat();
+
+    if (strcmp(stream_format.compression_type, "MJPG") != 0) {
+        printf("[FMV] Unsupported codec: '%s' (only MJPG supported)\n",
+               stream_format.compression_type);
+        return -1;
+    }
+
+    printf("[FMV] Video: %dx%d, %d frames, %.1f fps\n",
+           stream_format.image_width, stream_format.image_height,
+           avi_header.TotalNumberOfFrames,
+           avi_header.TimeBetweenFrames > 0 ? 1000000.0 / avi_header.TimeBetweenFrames : 0);
+
+    /* Set up audio */
+    ReadAVI::stream_format_auds_t audio_fmt = readAVI.GetAudioFormat();
+#if defined(__SWITCH__)
+    if (audio_fmt.samples_per_second > 0)
+        fmv_audout_init(audio_fmt.samples_per_second);
+    int audoutActive = s_audoutOk;
+#else
+    SDL_AudioSpec audioObtained;
+    SDL_AudioDeviceID audioDev = OpenFmvAudio(&audio_fmt, &audioObtained);
+    if (audioDev)
+        SDL_PauseAudioDevice(audioDev, 0);
+#endif
+
+    /* Use combined type mask to read both video and audio in one pass */
+    const int FRAME_TYPE_ALL = ReadAVI::ctype_video_data | ReadAVI::ctype_audio_data;
+
+    ReadAVI::frame_entry_t frame_entry;
+    frame_entry.type = (ReadAVI::chunk_type_t)FRAME_TYPE_ALL;
+    frame_entry.pointer = 0;
+
+    timerCtx_t fmvTimer;
+    Util_InitHPCTimer(&fmvTimer);
+
+    double nextFrameDelay = 0.0;
+    int done_frames = 0;
+
+    Util_GetHPCTime(&fmvTimer, 1);
+
+    /* Flush any pending key events before playback */
+    SDL_PumpEvents();
+    SDL_FlushEvent(SDL_KEYDOWN);
+    SDL_FlushEvent(SDL_KEYUP);
+
+    int skip_armed = 0;
+
+    while (1)
+    {
+        double delta = Util_GetHPCTime(&fmvTimer, 1);
+        if (delta > 1.0)
+            delta = 0.0;
+
+        nextFrameDelay -= delta;
+
+        SDL_PumpEvents();
+        const Uint8* keystate = SDL_GetKeyboardState(NULL);
+        int skipHeld = keystate[SDL_SCANCODE_RETURN] || keystate[SDL_SCANCODE_ESCAPE] ||
+                       keystate[SDL_SCANCODE_SPACE] || PsyX_Pad_SkipButtonHeld();
+        if (!skip_armed) {
+            if (!skipHeld)
+                skip_armed = 1;
+        } else if (skipHeld) {
+            printf("[FMV] Skipped at frame %d/%d\n", done_frames, avi_header.TotalNumberOfFrames);
+            break;
+        }
+
+#if !defined(__SWITCH__)
+        SDL_Event evt;
+        while (SDL_PollEvent(&evt)) {
+            if (evt.type == SDL_QUIT)
+                goto done;
+        }
+#endif
+        if (nextFrameDelay > 0) {
+            SDL_Delay(1);
+            continue;
+        }
+
+        frame_entry.type = (ReadAVI::chunk_type_t)FRAME_TYPE_ALL;
+        int frame_size = readAVI.GetFrameFromIndex(&frame_entry);
+
+        if (frame_size < 0)
+            break;
+
+        if (frame_entry.type == ReadAVI::ctype_audio_data) {
+#if defined(__SWITCH__)
+            if (audoutActive && frame_size > 0) {
+                int nSamples = frame_size / 2;
+                if (audio_fmt.channels == 1) {
+                    static int16_t stereoBuf[8192];
+                    int maxPairs = (int)(sizeof(stereoBuf) / (2 * sizeof(int16_t)));
+                    nSamples = nSamples < maxPairs ? nSamples : maxPairs;
+                    for (int i = nSamples - 1; i >= 0; i--) {
+                        int16_t s = ((const int16_t*)frame_entry.buf)[i];
+                        stereoBuf[i * 2] = s;
+                        stereoBuf[i * 2 + 1] = s;
+                    }
+                    fmv_audout_write(stereoBuf, nSamples);
+                } else {
+                    fmv_audout_write((const int16_t*)frame_entry.buf, nSamples / 2);
+                }
+            }
+#else
+            if (audioDev && frame_size > 0)
+                SDL_QueueAudio(audioDev, frame_entry.buf, frame_size);
+#endif
+            continue;
+        }
+
+        if (max_frames > 0 && done_frames >= max_frames)
+            break;
+
+        if (frame_size > 0 &&
+            (frame_entry.type == ReadAVI::ctype_compressed_video_frame ||
+             frame_entry.type == ReadAVI::ctype_uncompressed_video_frame))
+        {
+            int real_w, real_h;
+            if (UnpackJPEG(frame_entry.buf, frame_size, s_decodeBuffer, &real_w, &real_h) == 0)
+            {
+                DrawVideoFrame(real_w, real_h);
+            }
+
+            if (avi_header.TimeBetweenFrames > 0)
+                nextFrameDelay += (double)avi_header.TimeBetweenFrames / 1000000.0;
+            else
+                nextFrameDelay += 1.0 / 15.0;
+
+            done_frames++;
+        }
+    }
+
+done:
+#if defined(__SWITCH__)
+    fmv_audout_exit();
+#else
+    if (audioDev) {
+        SDL_PauseAudioDevice(audioDev, 1);
+        SDL_CloseAudioDevice(audioDev);
+    }
+#endif
+
+    {
+        int wait_frames = 0;
+        while (wait_frames < 30) {
+            SDL_PumpEvents();
+            const Uint8* ks = SDL_GetKeyboardState(NULL);
+            if (!ks[SDL_SCANCODE_RETURN] && !ks[SDL_SCANCODE_ESCAPE] &&
+                !ks[SDL_SCANCODE_SPACE] && !PsyX_Pad_SkipButtonHeld())
+                break;
+            SDL_Delay(16);
+            wait_frames++;
+        }
+        SDL_PumpEvents();
+        SDL_FlushEvent(SDL_KEYDOWN);
+        SDL_FlushEvent(SDL_KEYUP);
+    }
+
+    printf("[FMV] Playback complete (%d frames)\n", done_frames);
+    return 0;
+}
+
+extern "C" int FMV_PlayAviFile(const char* path, int max_frames)
+{
+    printf("[FMV] FMV_PlayAviFile(%s, %d)\n", path, max_frames);
+    return PlayAviPath(path, max_frames);
+}
+
 /* Play an FMV directly from the BIN disc image using the MDEC software
  * decoder. Audio is *not* decoded here yet — XA dialogue tracks have their
  * own pipeline (xa_player) and FMV soundtrack sync is a follow-up. Returns
@@ -813,6 +994,11 @@ static int PlayFromBin(int table_idx, int max_frames)
 
     printf("[FMV] BIN playback: %s (base_sector=0x%05X, n_sectors=%u)\n",
            e.name, (unsigned)e.base_sector, (unsigned)e.n_sectors);
+
+    if (e.base_sector == 0 && e.n_sectors == 0) {
+        printf("[FMV] %s has no BIN data (AVI-only entry)\n", e.name);
+        return -1;
+    }
 
     FILE* bin = OpenDiscImage();
     if (!bin) return -1;

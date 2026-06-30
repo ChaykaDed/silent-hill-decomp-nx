@@ -1,6 +1,7 @@
 @echo off
 chcp 65001 >nul
 setlocal enabledelayedexpansion
+set PATH=%PATH%;C:\devkitPro\tools\bin
 
 set BUILD_DIR=%~dp0build_switch
 
