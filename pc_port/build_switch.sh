@@ -69,9 +69,6 @@ case "$MODE" in
         cmake --build . --config Release
         echo -e "${GREEN}✓ Build complete!${NC}"
         echo -e "${GREEN}Output: ${BUILD_DIR}${NC}"
-        # Fix asset header (elf2nro on Windows has a bug with icon/nacp sizes)
-        cd "$BUILD_DIR"
-        python3 ../fix_nro_assets.py SilentHillPC.nro ../switch_icon.png SilentHillPC.nacp 2>/dev/null || true
         ;;
 
 
