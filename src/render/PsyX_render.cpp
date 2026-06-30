@@ -172,12 +172,6 @@ int g_cfg_affineTextures = 0;
  * primitives that don't request dither at the prim-tag level. */
 int g_cfg_psxDither = 1;
 int g_PsxDitherSuppressed = 0;
-int g_cfg_tonemap = 0;
-int g_PsyX_UsePerPixelFlashlight = 0;
-int g_PsyX_FlashlightActive = 0;
-float g_PsyX_FlashlightPos[3] = {0.0f};
-float g_PsyX_FlashlightDir[3] = {0.0f};
-
 /* PC port: MSAA sample count for the default framebuffer. 0 = off (no
  * multisample requested), 2/4/8 = N-sample MSAA. Read in GR_InitialiseRender
  * BEFORE the GL context is created (SDL_GL_MULTISAMPLE* attributes), so the
@@ -185,15 +179,9 @@ float g_PsyX_FlashlightDir[3] = {0.0f};
  * read/write the (now multisample) default framebuffer with scaling or a
  * single-sample peer become illegal — GR_StoreFrameBuffer resolves first and
  * GR_PresentLastFrame draws a fullscreen quad instead of blitting. */
-int g_cfg_msaaSamples = 0;
-
-/* PC port: full-screen post-process look applied once per frame in
- * GR_PostProcess (PsyX_EndScene, after the freeze capture + console hook, just
- * before swap). 0 = off; 1.. select a built-in look (see the post fragment
- * shader switch). Runtime-settable (launcher config key post_process + the F2
- * in-game cycle). Reads the final composed backbuffer through a resolve
- * texture, so it sees everything (world, UI, console) and is MSAA-safe. */
-int g_cfg_postProcess = 0;
+/* g_cfg_msaaSamples, g_cfg_postProcess defined in main_pc.c */
+extern int g_cfg_msaaSamples;
+extern int g_cfg_postProcess;
 #define POST_PROCESS_MODE_COUNT 8
 /* PC port: tone-map operator applied as the final step of the post-process
  * shader. 0=off, 1=Reinhard, 2=ACES, 3=Filmic. F3 cycles it in-game. Defined
@@ -1348,7 +1336,9 @@ int GR_InitialisePSX()
 	 * the sample count the driver actually granted (may differ from requested). */
 	if (g_cfg_msaaSamples > 0)
 	{
+#ifndef RENDERER_OGLES
 		glEnable(GL_MULTISAMPLE);
+#endif
 		int actualSamples = 0;
 		SDL_GL_GetAttribute(SDL_GL_MULTISAMPLESAMPLES, &actualSamples);
 		eprintf("*MSAA: requested %dx, got %dx\n", g_cfg_msaaSamples, actualSamples);
