@@ -440,11 +440,15 @@ static void DrawVideoFrame(int image_w, int image_h)
     }
 
     /* pos.x, pos.y, uv.x, uv.y */
+    float u0 = 0.0f, v0 = 0.0f, u1 = 1.0f, v1 = 1.0f;
+#if defined(__SWITCH__)
+    if (image_w == 640 && image_h == 480) { v0 = 60.0f / 480.0f; v1 = 420.0f / 480.0f; }
+#endif
     float quad[] = {
-        -scaleX,  scaleY,   0.0f, 0.0f,
-         scaleX,  scaleY,   1.0f, 0.0f,
-        -scaleX, -scaleY,   0.0f, 1.0f,
-         scaleX, -scaleY,   1.0f, 1.0f,
+        -scaleX,  scaleY,   u0, v0,
+         scaleX,  scaleY,   u1, v0,
+        -scaleX, -scaleY,   u0, v1,
+         scaleX, -scaleY,   u1, v1,
     };
 
     FmvGLState saved;
