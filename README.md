@@ -38,9 +38,12 @@ The renderer uses GLES 3.0 through native `GLES3/gl3.h` headers instead of glad 
 
 FMV video runs through the game's existing decoder with a shader version fix (`#version 300 es` for GLES). Audio uses audout directly instead of SDL audio, since OpenAL already claims the only SDL audio device available on Switch.
 
-## Status
-
-Links clean: 197/197 targets, NRO. Boots in Ryujinx — GLES context comes up, logos display, main menu works, FMVs play with sound. In-game rendering and gameplay still need testing.
+## Current state:
+- Playable
+- Gameplay and controls working
+- In-game rendering working
+- FMV cutscenes with audio
+- Original PS1 boot intro (added just for fun)
 
 ## Credits
 
