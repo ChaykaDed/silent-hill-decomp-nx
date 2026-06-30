@@ -1,55 +1,45 @@
 # Silent Hill 1 — Nintendo Switch Port
 
-Branch `feature/switch-port`. Port of the PC port to Nintendo Switch via devkitPro + libnx.
+This is a port of the Silent Hill 1 PC decompilation to Nintendo Switch, built with devkitPro and libnx. Everything lives in the `feature/switch-port` branch.
 
 ## Building
 
-### Prerequisites
-
-- devkitPro with devkitA64, libnx, portlibs
-- CMake 3.16+, Ninja
-- Git with submodule support
+You'll need devkitPro with devkitA64, libnx, and the Switch portlibs:
 
 ```
 dkp-pacman -S switch-dev switch-cmake ninja
 dkp-pacman -S switch-sdl2 switch-openal-soft switch-libjpeg-turbo
 ```
 
-### Clone
+Then clone and build:
 
 ```
 git clone https://github.com/ChaykaDed/silent-hill-decomp-nx.git
 cd silent-hill-decomp-nx
 git checkout feature/switch-port
 git submodule update --init --recursive
-```
-
-### Build
-
-```
 cd pc_port
 mkdir build_switch && cd build_switch
 cmake .. -DCMAKE_TOOLCHAIN_FILE=..\toolchains\switch.cmake -DCMAKE_BUILD_TYPE=Release -G Ninja
 ninja
-elf2nro SilentHillPC SilentHillPC.nro --nacp=SilentHillPC.nacp
+elf2nro SilentHillPC SilentHillPC.nro --nacp=SilentHillPC.nacp --icon=..\switch_icon.png
 ```
 
-On Linux: `./build_switch.sh rebuild` from `pc_port/`.
+On Linux, just run `./build_switch.sh rebuild` from `pc_port/`. There's also `build_switch.bat` for Windows.
 
-### Game Data
+## Game Data
 
-Place a Silent Hill PS1 BIN dump in `gamedata/` next to the NRO, or under `sdmc:/gamedata/` on the emulated Switch SD card (Ryujinx maps this to `%APPDATA%\Ryujinx\sdcard\` by default).
+Drop a Silent Hill PS1 BIN dump in `gamedata/` next to the NRO. On Ryujinx that's `%APPDATA%\Ryujinx\sdcard\gamedata\` by default.
 
-## Technical Notes
+## How It Works
 
-- GLES 3.0 via native `GLES3/gl3.h` (no glad function pointers)
-- glad loader was generated for `gl=4.3` desktop — incompatible with GLES 3.0 at runtime
-- Cross-compiler: devkitA64 GCC 15.2.0 (aarch64-none-elf)
-- GL driver: Mesa NVN over EGL
+The renderer uses GLES 3.0 through native `GLES3/gl3.h` headers instead of glad function pointers — the glad loader was generated for desktop GL 4.3 and didn't play nice with GLES 3.0 at runtime. The GL driver is Mesa NVN over EGL.
+
+FMV video runs through the game's existing decoder with a shader version fix (`#version 300 es` for GLES). Audio uses audout directly instead of SDL audio, since OpenAL already claims the only SDL audio device available on Switch.
 
 ## Status
 
-Full clean link (197/197 targets, 32 MB NRO). Boots in Ryujinx, creates GLES context, audio works. In-game rendering and gameplay not yet verified.
+Links clean: 197/197 targets, 32 MB NRO. Boots in Ryujinx — GLES context comes up, logos display, main menu works, FMVs play with sound. In-game rendering and gameplay still need testing.
 
 ## Credits
 
@@ -58,4 +48,4 @@ Full clean link (197/197 targets, 32 MB NRO). Boots in Ryujinx, creates GLES con
 - PsyCross: https://github.com/OpenDriver2/PsyCross
 - devkitPro: https://devkitpro.org
 
-Silent Hill © Konami. No game assets included in this repository.
+Silent Hill (c) Konami. This repository contains no game assets.
