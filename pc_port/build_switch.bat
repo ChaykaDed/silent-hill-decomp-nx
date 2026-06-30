@@ -23,7 +23,8 @@ cd /d "%BUILD_DIR%"
 ninja
 if %errorlevel% neq 0 exit /b %errorlevel%
 echo === NRO ===
-elf2nro SilentHillPC SilentHillPC.nro --nacp=SilentHillPC.nacp --icon=switch_icon.png
+elf2nro SilentHillPC SilentHillPC.nro --nacp=SilentHillPC.nacp --icon=..\switch_icon.png
+python3 ..\fix_nro_assets.py SilentHillPC.nro ..\switch_icon.png SilentHillPC.nacp
 echo === Done: %BUILD_DIR%\SilentHillPC.nro ===
 exit /b
 

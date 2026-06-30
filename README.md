@@ -23,6 +23,7 @@ mkdir build_switch && cd build_switch
 cmake .. -DCMAKE_TOOLCHAIN_FILE=..\toolchains\switch.cmake -DCMAKE_BUILD_TYPE=Release -G Ninja
 ninja
 elf2nro SilentHillPC SilentHillPC.nro --nacp=SilentHillPC.nacp --icon=..\switch_icon.png
+python3 ../fix_nro_assets.py SilentHillPC.nro ..\switch_icon.png SilentHillPC.nacp
 ```
 
 On Linux, just run `./build_switch.sh rebuild` from `pc_port/`. There's also `build_switch.bat` for Windows.
