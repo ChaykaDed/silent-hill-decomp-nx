@@ -35,6 +35,10 @@ typedef struct {
 
 static const s_MenuTranslation s_MenuTr[] = {
     /* --- Title menu + difficulty --- */
+    /* Title selection markers: '[' is byte 0x5B which the TR font repurposed
+     * as Ы — retarget both brackets to the font's own mark glyph (0x5D). */
+    { "[",       { NULL,    NULL,         NULL,         NULL,        "\x5D" } },
+    { "]",       { NULL,    NULL,         NULL,         NULL,        "\x5D" } },
     { "LOAD",     { "LADEN",  "CHARGER",   "CARGAR",    "CARICA"    , "\x33\x41\x44\x51\x54\x33\x49\x53\x77"}},
     { "CONTINUE", { "WEITER", "CONTINUER", "CONTINUAR", "CONTINUA"  , "\x50\x51\x4F\x45\x4F\x4C\x47\x49\x53\x77"}},
     { "START",    { NULL,     "COMMENCER", "EMPEZAR",   "INIZIA"    , "\x4E\x41\x58\x41\x53\x77"}},
@@ -75,6 +79,7 @@ static const s_MenuTranslation s_MenuTr[] = {
     { "\x01W\x01a\x01l\x01k/R\x01\x01u\x01n_\x01\x01\x01\x01" "Co\x01n\x01t\x01ro\x01l",
                         { "Gehen/Rennen",    "Marche/Course",    "Andar/Correr",    "Cammina/Corri",
                           "\x56\x4F\x45\x77\x42\x41\x5F\x49\x5F\x42\x46\x44" } },
+    { "Auto_Aiming",    { "Auto-Zielen",     "Vis\xE9" "e_auto", "Punter\xED" "a_auto", "Mira_autom." , "\x41\x43\x53\x4F\x50\x51\x49\x57\x46\x4C"}},
     { "View_Mode",      { "Ansichtsmodus",   "Mode_de_vue",      "Modo_de_vista",   "Modo_visuale"   , "\x51\x46\x47\x49\x4D\x5F\x4B\x41\x4D\x46\x51\x5B"}},
     { "Bullet_Adjust",  { "Munitionsbonus",  "Bonus_munitions",  "Ajuste_de_balas", "Regola_proiett." , "\x42\x4F\x4E\x54\x52\x5F\x50\x41\x53\x51\x4F\x4E\x4F\x43"}},
     { "Press",          { "Dr\xFC" "cken",   "Presser",          "Pulsar",          "Premi"          , "\x4E\x41\x47\x4D\x49"}},
