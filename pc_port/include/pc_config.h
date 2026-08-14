@@ -60,6 +60,9 @@ typedef struct {
                           * (needs allow_debug_controls). Legacy values 2/3 still parse. */
     int psxDither;       /* texture filtering mode: 0 = off, 1 = PSX dither, 2 = bilinear */
     int widescreenMode;  /* 0 = pillarbox (PSX-faithful, default), 1 = Hor+ (extra side content), 2 = stretch */
+    float widescreenZoom; /* Hor+ zoom factor: 1.0 = stock Hor+, >1 zooms the 3D world in
+                           * uniformly (bigger character, crops beyond-map void), <1 wider.
+                           * (config key: widescreen_zoom) */
     int menuPillarbox;   /* 1 = pillarbox 2D screens (menus/load) with 4:3 black bars instead of stretching to fill (config key: menu_pillarbox) */
     int allowLooseFiles; /* 1 = scan gamedata/load/{folder}/{name}.{ext} before CD read (texture mod support) */
     int residentTextures; /* 1 = expanded chunk-texture pool: past the 10 vanilla VRAM pages, materials get

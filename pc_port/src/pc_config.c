@@ -23,6 +23,7 @@ s_PcConfig g_PcConfig = {
     .showConsole    = 0,
     .psxDither      = 1, /* 0=off, 1=PSX dither, 2=bilinear */
     .widescreenMode  = 1, /* 0=pillarbox, 1=Hor+ (default, no bars + correct proportions), 2=stretch */
+    .widescreenZoom  = 1.0f, /* Hor+ zoom: 1.0 = stock, >1 zooms in (bigger chars, crops void) */
     .menuPillarbox   = 1, /* 1=pillarbox 2D screens (black bars), 0=stretch to fill */
     .allowLooseFiles = 0, /* 0=disc image only, 1=scan gamedata/load/ first */
     .residentTextures = 1, /* 1=expanded chunk-texture pool w/ per-slot GL textures (whole map textured), 0=vanilla 8+2 VRAM pool */
@@ -487,6 +488,12 @@ void PcConfig_Load(const char* path)
             int v = atoi(value);
             if (v < 0 || v > 2) v = 0; /* invalid -> default to pillarbox */
             g_PcConfig.widescreenMode = v;
+        }
+        else if (strcmp(key, "widescreen_zoom") == 0)
+        {
+            float v = (float)atof(value);
+            if (v < 0.5f || v > 2.0f) v = 1.0f; /* invalid -> stock Hor+ */
+            g_PcConfig.widescreenZoom = v;
         }
         else if (strcmp(key, "menu_pillarbox") == 0)
         {

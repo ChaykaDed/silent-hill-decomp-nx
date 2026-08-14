@@ -811,10 +811,12 @@ int main(int argc, char* argv[])
 
     /* Apply widescreen mode to PsyCross. */
     {
-        extern int g_PcWidescreenMode;
-        extern int g_PcMenuPillarbox;
+        extern int   g_PcWidescreenMode;
+        extern int   g_PcMenuPillarbox;
+        extern float g_PcWidescreenZoom;
         g_PcWidescreenMode = g_PcConfig.widescreenMode;
         g_PcMenuPillarbox  = g_PcConfig.menuPillarbox;
+        g_PcWidescreenZoom = g_PcConfig.widescreenZoom;
     }
 
     /* show_console now only controls the EXTERNAL console window (1 or 3 =
