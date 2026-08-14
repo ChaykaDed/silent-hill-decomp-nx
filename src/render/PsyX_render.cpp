@@ -3371,8 +3371,10 @@ static void GR_EnsureShadowTarget(void)
 	glGenFramebuffers(1, &g_shadowFBO);
 	glBindFramebuffer(GL_FRAMEBUFFER, g_shadowFBO);
 	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, g_shadowDepthTex, 0);
+#if !defined(RENDERER_OGLES)
 	glDrawBuffer(GL_NONE);
 	glReadBuffer(GL_NONE);
+#endif
 	glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
 	if (g_shadowDepthShader == (ShaderID)-1)

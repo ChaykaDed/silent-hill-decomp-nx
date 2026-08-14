@@ -268,7 +268,7 @@ float g_SpuReverbDepthScale = 2.0f; /* wet = |depth|/32768 * scale; `revscale` c
 
 static void ApplyReverbWet(void)
 {
-#ifndef __EMSCRIPTEN__
+#if !defined(__EMSCRIPTEN__) && !defined(__SWITCH__)
 	if (!g_ALEffectsSupported || !alAuxiliaryEffectSlotf)
 		return;
 	int dl = g_reverbDepthL < 0 ? -g_reverbDepthL : g_reverbDepthL;
