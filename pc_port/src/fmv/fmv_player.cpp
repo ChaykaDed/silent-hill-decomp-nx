@@ -512,17 +512,18 @@ static void DrawVideoFrameEx(const unsigned char* pixels, int image_w, int image
     if (s_fmvCoverMode) {
         /* Cover: fill the window, crop the overflow around the center. The
          * PS1 boot splash is centered, so its logo survives the top/bottom
-         * crop on a 16:9 screen. */
+         * crop on a 16:9 screen. Visible fraction of the cropped axis is
+         * the SMALLER aspect / LARGER aspect. */
         scaleX = 1.0f;
         scaleY = 1.0f;
         if (video_aspect > window_aspect) {
-            float crop = (video_aspect / window_aspect - 1.0f) * 0.5f;
-            u0 = crop;
-            u1 = 1.0f - crop;
+            float du = window_aspect / video_aspect;
+            u0 = (1.0f - du) * 0.5f;
+            u1 = u0 + du;
         } else {
-            float crop = (window_aspect / video_aspect - 1.0f) * 0.5f;
-            v0 = crop;
-            v1 = 1.0f - crop;
+            float dv = video_aspect / window_aspect;
+            v0 = (1.0f - dv) * 0.5f;
+            v1 = v0 + dv;
         }
     } else {
         /* Fit: letterbox the whole frame. */
