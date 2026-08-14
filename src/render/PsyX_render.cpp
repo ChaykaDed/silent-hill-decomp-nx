@@ -2739,15 +2739,16 @@ void GR_SetOffscreenState(const RECT16* offscreenRect, int enable)
 				const float hscale = g_PsxUIOrthoPass ? 1.0f : g_PsxWorldHScale;
 				const float cx     = psxW * 0.5f;
 				const float halfW  = (psxW * 0.5f + margin) / hscale;
-				/* widescreen_zoom: scale BOTH axes around center. >1 crops the reveal
-				 * (bigger character, less beyond-map void), <1 shows more world. */
+				/* widescreen_zoom: scale both axes around center. Keeps the
+				 * original (bottom, top) argument order of GR_Ortho2D. */
 				const float zoom = (g_PsxUIOrthoPass || g_PcWidescreenZoom <= 0.0f)
 					? 1.0f : g_PcWidescreenZoom;
-				const float halfH  = (orthoBot - orthoTop) * 0.5f / zoom;
-				const float cy     = (orthoTop + orthoBot) * 0.5f;
+				const float halfH = (orthoBot - orthoTop) * 0.5f / zoom;
+				const float cy    = (orthoTop + orthoBot) * 0.5f;
 				fbOrthoL = cx - halfW / zoom;
 				fbOrthoR = cx + halfW / zoom;
-				GR_Ortho2D(cx - halfW / zoom, cx + halfW / zoom, cy + halfH, cy - halfH, -1.0f, 1.0f);
+				GR_Ortho2D(cx - halfW / zoom, cx + halfW / zoom,
+				          cy + halfH, cy - halfH, -1.0f, 1.0f);
 			} else {
 				/* Pillarbox (mode 0, default) or stretch (mode 2): 4:3 ortho.
 				 * The viewport (below) handles pillarbox vs full-window. */
