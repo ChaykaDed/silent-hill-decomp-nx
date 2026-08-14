@@ -25,11 +25,11 @@ cd /d "%BUILD_DIR%"
 ninja
 if %errorlevel% neq 0 exit /b %errorlevel%
 echo === NACP ===
-nacptool --create "Silent Hill" "ChaykaDed" "1.0" SilentHillPC.nacp
+nacptool --create "Silent Hill" "DerilDX" "1.0" SilentHillPC.nacp
 echo === NRO ===
 elf2nro SilentHillPC SilentHillPC.nro --nacp=SilentHillPC.nacp
 echo === Icon ===
-python3 ..\maker.py --nro SilentHillPC.nro --icon ..\SH1icon.png --author "ChaykaDed"
+python3 ..\maker.py --nro SilentHillPC.nro --icon ..\SH1icon.png --author "DerilDX"
 echo === Done: %BUILD_DIR%\SilentHillPC.nro ===
 exit /b
 
