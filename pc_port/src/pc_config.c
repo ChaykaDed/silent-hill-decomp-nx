@@ -365,6 +365,18 @@ void PcConfig_Load(const char* path)
     FILE* f = fopen(path, "r");
     if (!f)
     {
+        /* Homebrew layouts (sdmc:/switch/gamedata/) keep everything under the
+         * gamedata folder — accept the config there too. */
+        f = fopen("gamedata/config.cfg", "r");
+        if (f)
+        {
+            strncpy(s_configPath, "gamedata/config.cfg", sizeof(s_configPath) - 1);
+            s_configPath[sizeof(s_configPath) - 1] = '\0';
+            path = s_configPath;
+        }
+    }
+    if (!f)
+    {
         fprintf(stderr, "[CONFIG] %s not found, using defaults (%dx%d, fullscreen=%d, map=%s)\n",
                 path, g_PcConfig.windowWidth, g_PcConfig.windowHeight,
                 g_PcConfig.fullscreen, g_PcConfig.mapName);
