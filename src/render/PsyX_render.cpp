@@ -18,6 +18,7 @@
 #include <string.h>
 #if defined(__SWITCH__)
 #include <SDL2/SDL.h>
+extern "C" void svcOutputDebugString(const char* str, size_t len);
 #endif
 
 #ifdef _WIN32
@@ -2708,6 +2709,16 @@ void GR_CopyVRAM(unsigned short* src, int x, int y, int w, int h, int dst_x, int
 	if (w <= 0 || h <= 0)
 		return;
 
+#if defined(__SWITCH__)
+	{
+
+		char _dbg[200];
+		int _n = snprintf(_dbg, sizeof(_dbg), "[VRAM] CopyVRAM: src=(%d,%d) dst=(%d,%d) w=%d h=%d stride=%d",
+			x, y, dst_x, dst_y, w, h, stride);
+		if (_n > 0) svcOutputDebugString(_dbg, (size_t)(_n < (int)sizeof(_dbg) ? _n : (int)sizeof(_dbg)-1));
+	}
+#endif
+
 	unsigned short* dst = vram + dst_x + dst_y * VRAM_WIDTH;
 
 	for (int i = 0; i < h; i++) {
@@ -2807,6 +2818,23 @@ void GR_DumpVRAM(const char* path)
 	if (!f)
 		return;
 	fwrite(vram, sizeof(unsigned short), VRAM_WIDTH * VRAM_HEIGHT, f);
+	fclose(f);
+}
+
+void GR_DumpVRAMRegion(const char* path, int x, int y, int w, int h)
+{
+	FILE* f = fopen(path, "wb");
+	if (!f)
+		return;
+	if (x < 0 || y < 0 || w <= 0 || h <= 0) { fclose(f); return; }
+	if (x + w > VRAM_WIDTH)  w = VRAM_WIDTH  - x;
+	if (y + h > VRAM_HEIGHT) h = VRAM_HEIGHT - y;
+	if (w <= 0 || h <= 0) { fclose(f); return; }
+
+	fwrite(&w, sizeof(short), 1, f);
+	fwrite(&h, sizeof(short), 1, f);
+	for (int row = 0; row < h; row++)
+		fwrite(vram + (size_t)(y + row) * VRAM_WIDTH + x, sizeof(unsigned short), w, f);
 	fclose(f);
 }
 

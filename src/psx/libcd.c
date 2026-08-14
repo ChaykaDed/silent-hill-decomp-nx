@@ -585,7 +585,12 @@ int CdReadSync(int mode, u_char* result)
 		}
 	}
 
-	return -1;
+	/* No pending commands in queue. This happens when a loose-file read
+	 * bypasses CdRead entirely (no queue entry was planted). Returning -1
+	 * makes the caller (FsQueueReadState_Sync) treat it as a CD error and
+	 * enter an infinite reset loop — see the FONT16.black-screen bug.
+	 * Return 0 instead: "nothing to sync" == "synced successfully". */
+	return 0;
 }
 
 int CdSetDebug(int level)
