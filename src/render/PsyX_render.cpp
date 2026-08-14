@@ -158,6 +158,13 @@ int g_PcMenuPillarbox = 1;
  * Default 1 = Hor+ with square pixels. Override from config.cfg via widescreen_mode. */
 int g_PcWidescreenMode = 1;
 
+/* PC port: Hor+ zoom factor. 1.0 = stock Hor+ (full reveal). >1 zooms the
+ * 3D world in uniformly (both axes — no distortion), which makes the
+ * character larger and crops the beyond-the-map void that wide angles
+ * reveal on maps modeled only for the 4:3 view. Config key
+ * `widescreen_zoom` (0.5..2.0). */
+float g_PcWidescreenZoom = 1.0f;
+
 int g_cfg_pgxpTextureCorrection = 1;
 int g_cfg_pgxpZBuffer = 1;
 
@@ -2732,9 +2739,15 @@ void GR_SetOffscreenState(const RECT16* offscreenRect, int enable)
 				const float hscale = g_PsxUIOrthoPass ? 1.0f : g_PsxWorldHScale;
 				const float cx     = psxW * 0.5f;
 				const float halfW  = (psxW * 0.5f + margin) / hscale;
-				fbOrthoL = cx - halfW;
-				fbOrthoR = cx + halfW;
-				GR_Ortho2D(cx - halfW, cx + halfW, orthoBot, orthoTop, -1.0f, 1.0f);
+				/* widescreen_zoom: scale BOTH axes around center. >1 crops the reveal
+				 * (bigger character, less beyond-map void), <1 shows more world. */
+				const float zoom = (g_PsxUIOrthoPass || g_PcWidescreenZoom <= 0.0f)
+					? 1.0f : g_PcWidescreenZoom;
+				const float halfH  = (orthoBot - orthoTop) * 0.5f / zoom;
+				const float cy     = (orthoTop + orthoBot) * 0.5f;
+				fbOrthoL = cx - halfW / zoom;
+				fbOrthoR = cx + halfW / zoom;
+				GR_Ortho2D(cx - halfW / zoom, cx + halfW / zoom, cy + halfH, cy - halfH, -1.0f, 1.0f);
 			} else {
 				/* Pillarbox (mode 0, default) or stretch (mode 2): 4:3 ortho.
 				 * The viewport (below) handles pillarbox vs full-window. */
