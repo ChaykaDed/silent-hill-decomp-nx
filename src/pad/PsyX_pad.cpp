@@ -28,6 +28,7 @@ int						g_cfg_controllerToSlotMapping[MAX_CONTROLLERS] = { -1, -1 };
  * 1 = d-pad only (digital), 2 = both (default). Set from config in main_pc.c.
  * Drives whether the emulated pad sits in analog (0x73) or digital (0x41) mode. */
 int						g_cfg_controllerMovement = 2;
+int						g_cfg_disableDpadMovement = 0; /* 1 = controller D-pad no longer drives movement (freed for action binds); keyboard arrows unaffected */
 
 PsyXController			g_controllers[MAX_CONTROLLERS];
 
@@ -50,6 +51,15 @@ int PsyX_Pad_InitSystem()
 	// do not init second time!
 	if (g_sdlKeyboardState != NULL)
 		return 1;
+
+	// DualSense needs the hidapi backend. Both hints already default to "1" on
+	// every SDL2 that ships a PS5 driver (>= 2.0.14), so this is an explicit pin
+	// rather than a fix — but it MUST stay above the SDL_InitSubSystem below,
+	// because SDL latches joystick hints when the subsystem starts. An
+	// SDL_JOYSTICK_HIDAPI=0 environment variable still wins (NORMAL priority),
+	// which is what leaves Steam Input's overrides working.
+	SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI, "1");
+	SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_PS5, "1");
 
 	memset(g_controllers, 0, sizeof(g_controllers));
 
@@ -319,6 +329,29 @@ extern "C" int PsyX_RawControllerButtonHeld(int sdlGameControllerButton)
 	return 0;
 }
 
+/* PC port: as above, but accepts a bind encoded by PsyX_LookupGameControllerMapping
+ * — i.e. a digital button OR an axis (CONTROLLER_MAP_FLAG_AXIS), which is how
+ * "lefttrigger"/"righttrigger" are represented. The PSX-button binds always went
+ * through that encoding (pad_cross defaults to righttrigger), but the port's own
+ * action binds resolved with SDL_GameControllerGetButtonFromString, which knows
+ * only digital buttons and returns INVALID for a trigger — so binding an action to
+ * L2/R2 silently did nothing. Digitised with the same >16384 half-scale threshold
+ * the pad word uses elsewhere. */
+extern "C" int PsyX_RawControllerBindHeld(int buttonOrAxis)
+{
+	int i;
+	if (buttonOrAxis < 0)
+		return 0;
+	for (i = 0; i < MAX_CONTROLLERS; i++)
+	{
+		SDL_GameController* gc = g_controllers[i].gc;
+		if (gc && SDL_GameControllerGetAttached(gc) &&
+		    abs(GetControllerButtonState(gc, buttonOrAxis)) > 16384)
+			return 1;
+	}
+	return 0;
+}
+
 /* PC port: Schmitt-trigger digitization. An analog input (trigger/stick) mapped to a
    button presses only above HIGH and releases only below LOW, so a value wavering near a
    single 50% threshold can't chatter the digital bit -- that chatter double-fired the gun
@@ -380,6 +413,14 @@ void PsyX_Pad_UpdateGameControllerInput(PsyXController* controller, LPPADRAW pad
 	controller->hystWord[1] = w2;
 	ret = w1 & w2;
 
+	/* "Disable D-pad for movement": un-press the controller D-pad bits (active-low,
+	 * so OR them back to 1) so the D-pad no longer drives walk/turn. Keyboard arrows
+	 * use a separate word (unaffected), and actions bound to the D-pad read the raw
+	 * controller via PsyX_RawControllerButtonHeld, so binding still works. Bits:
+	 * UP 0x10, DOWN 0x40, LEFT 0x80, RIGHT 0x20. */
+	if (g_cfg_disableDpadMovement)
+		ret |= 0x10 | 0x40 | 0x80 | 0x20;
+
 	leftX = GetControllerButtonState(cont, g_cfg_controllerMapping.gc_axis_left_x);
 	leftY = GetControllerButtonState(cont, g_cfg_controllerMapping.gc_axis_left_y);
 
@@ -423,6 +464,7 @@ static u_short PsyX_Pad_BuildKbWord(const PsyXKeyboardMapping& mapping)
  * 1..5 clears whatever PSX bits the config bound it to (g_cfg_mouseButtonMask). */
 static u_short PsyX_Pad_BuildMouseWord()
 {
+	extern int g_PsyX_WheelUpFrames, g_PsyX_WheelDownFrames;
 	u_short ret = 0xFFFF;
 	Uint32  mb  = SDL_GetMouseState(NULL, NULL);
 	int     b;
@@ -432,6 +474,13 @@ static u_short PsyX_Pad_BuildMouseWord()
 		if ((mb & SDL_BUTTON(b)) && g_cfg_mouseButtonMask[b])
 			ret &= ~g_cfg_mouseButtonMask[b];
 	}
+
+	/* Mouse wheel up/down occupy mask slots 6/7 (see Pc_ParseMouseName). The
+	 * latch is set on the scroll event and decayed once per frame in
+	 * PsyX_EndScene — read it here (don't consume), so a wheel bound to a PSX
+	 * button AND to the graphics keys both see the same notch. */
+	if (g_PsyX_WheelUpFrames   > 0 && g_cfg_mouseButtonMask[6]) ret &= ~g_cfg_mouseButtonMask[6];
+	if (g_PsyX_WheelDownFrames > 0 && g_cfg_mouseButtonMask[7]) ret &= ~g_cfg_mouseButtonMask[7];
 	return ret;
 }
 

@@ -1,9 +1,3 @@
-#include <SDL2/SDL.h>
-#include <SDL2/SDL_thread.h>
-#include <SDL2/SDL_mutex.h>
-#include <SDL2/SDL.h>
-#include <SDL2/SDL_thread.h>
-#include <SDL2/SDL_mutex.h>
 #include "psx/libcd.h"
 
 #include "../PsyX_main.h"
@@ -104,6 +98,15 @@ typedef struct commandQueue
 	u_char* p;
 	u_int processed;
 	u_int count;
+	/* Absolute image offset of the NEXT sector this read consumes. Owned
+	 * per-read because g_imageFile's cursor is SHARED: a CdlSetloc/CdlSeekL
+	 * from an audio task (VAB/KDT/XA preload) between this read's
+	 * one-sector-per-frame CdReadSync ticks silently redirected the
+	 * remaining sectors to the audio file's position — fresh head + wrong
+	 * tail in the destination buffer (IPD chunks: garbage geometry AND
+	 * collision). Real PSX hardware continues from the drive's own read
+	 * position, so per-read tracking is the faithful semantic. */
+	long pos;
 }commandQueue_s, *commandQueue_p;
 
 
@@ -525,6 +528,9 @@ int CdRead(int sectors, u_long* buf, int mode)
 			g_cdComQueue[i].p = (unsigned char*)buf;
 			g_cdComQueue[i].processed = 0;
 			g_cdComQueue[i].count = sectors;
+			/* The preceding CdlSetloc positioned the cursor at this read's
+			 * start — capture it so later cursor movement can't hijack us. */
+			g_cdComQueue[i].pos = vftell(&g_imageFile);
 
 			ret = 1;
 			break;
@@ -547,11 +553,16 @@ int CdReadSync(int mode, u_char* result)
 		{
 			do
 			{
+				/* Restore THIS read's cursor — no-op when nothing moved it,
+				 * rescue when an interleaved audio seek did. */
+				vfseek(&g_imageFile, g_cdComQueue[i].pos, SEEK_SET);
+
 				if (readMode == RM_DATA)
 				{
 					Sector sector;
 
 					vfread(&sector, sizeof(Sector), 1, &g_imageFile);
+					g_cdComQueue[i].pos += sizeof(Sector);
 
 					memcpy(g_cdComQueue[i].p, &sector.data[0], sizeof(sector.data));
 					g_cdComQueue[i].p += sizeof(sector.data);
@@ -561,6 +572,7 @@ int CdReadSync(int mode, u_char* result)
 					AudioSector sector;
 
 					vfread(&sector, sizeof(AudioSector), 1, &g_imageFile);
+					g_cdComQueue[i].pos += sizeof(AudioSector);
 
 					memcpy(g_cdComQueue[i].p, &sector.data[0], sizeof(sector.data));
 					g_cdComQueue[i].p += sizeof(sector.data);

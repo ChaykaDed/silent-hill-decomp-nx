@@ -32,6 +32,7 @@
 
 #include "PsyX/PsyX_render.h"
 
+#ifndef _WIN32
 #ifdef __EMSCRIPTEN__
 int strcasecmp(const char* _l, const char* _r)
 {
@@ -39,11 +40,53 @@ int strcasecmp(const char* _l, const char* _r)
 	for (; *l && *r && (*l == *r || tolower(*l) == tolower(*r)); l++, r++);
 	return tolower(*l) - tolower(*r);
 }
-#elif !defined(_WIN32)
+#else
 #include <strings.h>
 #endif
+#define _stricmp(s1, s2) strcasecmp(s1, s2)
+#endif // _WIN32
 
 SDL_Window* g_window = NULL;
+
+/* PC port: mouse confinement. Default on; the launcher/config can clear it. */
+int g_cfg_confineCursor = 1;
+
+/* Keep the pointer inside the window while the game holds focus, the way
+ * borderless games normally behave. Without this a multi-monitor borderless
+ * setup lets the cursor walk onto the next screen during any mouse-driven
+ * moment (item pickup, inventory, menus, puzzles) and a click there tabs the
+ * game out (GitHub #87).
+ *
+ * MOUSE grab only, never SDL_SetWindowKeyboardGrab: the keyboard grab is what
+ * would swallow Alt+Tab and the Windows key, and it is a separate SDL call, so
+ * both stay working. SDL's Windows backend only clips while the window is
+ * focused and drops the clip on deactivation, so alt-tabbing out releases the
+ * pointer on its own and coming back re-clips it.
+ *
+ * Windowed mode is deliberately never confined - trapping the pointer in a
+ * window the user can see past is hostile, and the reported problem is specific
+ * to fullscreen/borderless. SDL_WINDOW_FULLSCREEN is set for exclusive AND
+ * desktop-fullscreen, so this one test covers both. */
+void PsyX_UpdateMouseConfinement(void)
+{
+	if (g_window == NULL)
+		return;
+
+	{
+		const Uint32 flags = SDL_GetWindowFlags(g_window);
+		const int    want  = (g_cfg_confineCursor != 0) &&
+		                     (flags & SDL_WINDOW_FULLSCREEN) != 0;
+
+		/* Relative mode (TPS/OTS mouse-look) already confines the pointer and
+		 * owns the grab state; leave it alone so a mode change mid-look does
+		 * not drop its capture. */
+		if (SDL_GetRelativeMouseMode() == SDL_TRUE)
+			return;
+
+		if ((SDL_GetWindowMouseGrab(g_window) == SDL_TRUE) != (want != 0))
+			SDL_SetWindowMouseGrab(g_window, want ? SDL_TRUE : SDL_FALSE);
+	}
+}
 int g_swapInterval = 1;
 int g_enableSwapInterval = 1;
 int g_skipSwapInterval = 0;
@@ -100,7 +143,11 @@ extern void GR_BeginScene();
 extern void GR_EndScene();
 extern void GR_UpdateSwapIntervalState(int swapInterval);
 
-int g_vmode = -1;
+/* Default NTSC: the USA disc never calls SetVideoMode, so g_vmode stayed -1
+ * (!= MODE_NTSC) and every vblank-rate decision fell through to PAL 50Hz —
+ * making the frame limiter miss by 5/6 (a 60fps cap ran 50, 30 ran 25) and
+ * frame-locked sequence audio play ~17% slow. */
+int g_vmode = MODE_NTSC;
 int g_frameSkip = 0;
 
 #ifdef __EMSCRIPTEN__
@@ -311,14 +358,6 @@ static void PsyX_Sys_InitialiseInput()
 
 	PsyX_Pad_InitSystem();
 }
-
-#ifdef __GNUC__
-/* strcasecmp lives in <strings.h>, but in this TU an earlier include locks
- * the glibc feature-test macros before <strings.h> is reached, leaving it
- * undeclared under -std=gnu++17. Declare it directly (POSIX signature). */
-extern "C" int strcasecmp(const char* s1, const char* s2);
-#define _stricmp(s1, s2) strcasecmp(s1, s2)
-#endif
 
 // Keyboard mapping lookup
 int PsyX_LookupKeyboardMapping(const char* str, int default_value)
@@ -740,6 +779,8 @@ void PsyX_Initialise(char* appName, int width, int height, int fullscreen)
 		return;
 	}
 
+	PsyX_UpdateMouseConfinement();
+
 	if (!PsyX_Sys_InitialiseCore())
 	{
 		eprinterr("Failed to Intialise Psy-X Core.\n");
@@ -779,7 +820,12 @@ void PsyX_Sys_DoDebugMouseMotion(int x, int y);
 void PsyX_Exit();
 
 int g_activeKeyboardControllers = 0x1;
-int g_altKeyState = 0;
+
+/* Mouse wheel is event-based (a notch, not a held state), so latch each scroll
+ * for a few pad reads to give the game clean press/release edges — a scroll
+ * bound to a PSX button then acts as a tap. Consumed in PsyX_Pad_BuildMouseWord. */
+int g_PsyX_WheelUpFrames   = 0;
+int g_PsyX_WheelDownFrames = 0;
 
 void PsyX_Sys_DoPollEvent()
 {
@@ -808,31 +854,53 @@ void PsyX_Sys_DoPollEvent()
 				case SDL_WINDOWEVENT_CLOSE:
 					PsyX_Exit();
 					break;
+
+				/* Re-assert the clip when the window is focused again: SDL drops
+				 * it on deactivation, which is exactly what lets alt-tab out. */
+				case SDL_WINDOWEVENT_FOCUS_GAINED:
+					PsyX_UpdateMouseConfinement();
+					break;
 				}
 				break;
 			case SDL_MOUSEMOTION:
 
 				PsyX_Sys_DoDebugMouseMotion(event.motion.x, event.motion.y);
 				break;
+			case SDL_MOUSEWHEEL:
+			{
+				int wy = event.wheel.y;
+				if (event.wheel.direction == SDL_MOUSEWHEEL_FLIPPED)
+					wy = -wy;
+				/* Latch a scroll notch "active" for ~2 frames. Decayed once per
+				 * frame in PsyX_EndScene (NOT consumed by any one reader) so BOTH
+				 * the pad word AND the graphics-tuning keys (dbg_overlay) can see
+				 * the same scroll without racing to consume it. */
+				if (wy > 0)      g_PsyX_WheelUpFrames   = 2;
+				else if (wy < 0) g_PsyX_WheelDownFrames = 2;
+				break;
+			}
 			case SDL_KEYDOWN:
 			case SDL_KEYUP:
 			{
 				int nKey = event.key.keysym.scancode;
 
-				if (nKey == SDL_SCANCODE_RALT)
+				if (nKey == SDL_SCANCODE_RETURN)
 				{
-					g_altKeyState = (event.type == SDL_KEYDOWN);
-				}
-				else if (nKey == SDL_SCANCODE_RETURN)
-				{
-					if (g_altKeyState && event.type == SDL_KEYDOWN)
+					/* Alt+Enter toggles fullscreen. Gate it on SDL's LIVE modifier
+					 * state, not a hand-tracked alt flag: that flag missed the Alt
+					 * key-up whenever the window lost focus (alt-tab), stuck true,
+					 * and then a plain Enter — e.g. skipping an intro — flipped the
+					 * window mode and read as the game alt-tabbing out. SDL clears
+					 * its modifier state on focus loss, so it can't stick. */
+					if ((SDL_GetModState() & KMOD_ALT) && event.type == SDL_KEYDOWN)
 					{
-						int fullscreen = SDL_GetWindowFlags(g_window) & SDL_WINDOW_FULLSCREEN > 0;
+						int fullscreen = (SDL_GetWindowFlags(g_window) & SDL_WINDOW_FULLSCREEN) > 0;
 
 						SDL_SetWindowFullscreen(g_window, fullscreen ? 0 : SDL_WINDOW_FULLSCREEN_DESKTOP);
 
 						SDL_GetWindowSize(g_window, &g_windowWidth, &g_windowHeight);
 						GR_ResetDevice();
+						PsyX_UpdateMouseConfinement();
 					}
 					break;
 				}
@@ -888,7 +956,10 @@ char PsyX_BeginScene()
 		if (SDL_GetWindowDisplayMode(g_window, &curMode) == 0)
 		{
 			const int mode_frequency = g_vmode == MODE_NTSC ? VBLANK_FREQUENCY_NTSC : VBLANK_FREQUENCY_PAL;
-			if (curMode.refresh_rate < mode_frequency)
+			/* refresh_rate == 0 means "unknown" (common for a windowed window on
+			 * some drivers); do NOT treat that as a low-refresh screen or it
+			 * decrements a requested vsync=1 down to 0 and vsync appears stuck off. */
+			if (curMode.refresh_rate > 0 && curMode.refresh_rate < mode_frequency)
 				swapInterval--;
 		}
 
@@ -949,13 +1020,29 @@ void PsyX_EndScene()
 	assert(begin_scene_flag);
 	begin_scene_flag = 0;
 
+	/* Decay the mouse-wheel latch once per frame (set in PsyX_Sys_DoPollEvent,
+	 * read by the pad word + the graphics-tuning keys). */
+	if (g_PsyX_WheelUpFrames   > 0) g_PsyX_WheelUpFrames--;
+	if (g_PsyX_WheelDownFrames > 0) g_PsyX_WheelDownFrames--;
+
 	PGXP_CoverageTick();
 
 	GR_EndScene();
 
 #ifndef PSYX_SKIP_FRAMEBUFFER_STORE
+	/* The naive whole-display-rect store. Disabled for Silent Hill: the PC libgs
+	 * stub reports disp as (0,0) so this lands on the CLUT strip at y<32, and it
+	 * reaches VRAM by raw blit, which cannot produce the packed RG8 the sampler
+	 * decodes. GR_StoreFrameBufferPsx below is the working replacement. */
 	GR_StoreFrameBuffer(activeDispEnv.disp.x, activeDispEnv.disp.y, activeDispEnv.disp.w, activeDispEnv.disp.h);
 #endif
+
+	/* PC port: pack the composed frame into the PSX display-buffer pages so the
+	 * game's framebuffer-feedback effects can read the previous frame back —
+	 * the Harry-running loading-screen motion blur and the per-map dream
+	 * overlays. No-op until GsDefDispBuff2 reports the buffer origins, and
+	 * honours the g_PsxSkipFramebufferStore per-frame opt-out. */
+	GR_StoreFrameBufferPsx();
 
 	/* PC port: g_PsxSkipFramebufferStore is a per-frame opt-out — the game must
 	 * re-set it each tick during a TIM-protect screen (e.g. paper-map pickup). */
@@ -1084,7 +1171,9 @@ void PsyX_UpdateInput()
 	if (SDL_ShowCursor(SDL_QUERY) != SDL_DISABLE)
 		SDL_ShowCursor(SDL_DISABLE);
 
-	if(!g_altKeyState)
+	/* Skip pad polling while Alt is held (Alt+Tab / Alt+Enter) — live SDL modifier
+	 * state, so it can't stick true and freeze the pad after a focus change. */
+	if (!(SDL_GetModState() & KMOD_ALT))
 		PsyX_Pad_InternalPadUpdates();
 }
 
@@ -1117,6 +1206,55 @@ void PsyX_SetSwapInterval(int interval)
 void PsyX_EnableSwapInterval(int enable)
 {
 	g_enableSwapInterval = enable;
+}
+
+void PsyX_ApplyVsync(int vsync)
+{
+	/* Drive vsync through the per-frame swap-interval path (PsyX_BeginScene): a
+	 * direct SDL_GL_SetSwapInterval is overwritten every frame from
+	 * g_cfg_swapInterval, so toggling that gate is what actually sticks. */
+	g_cfg_swapInterval = (vsync != 0) ? 1 : 0;
+	g_swapInterval = 1;
+}
+
+void PsyX_ApplyWindowState(int width, int height, int fullscreen)
+{
+	if (!g_window)
+		return;
+
+	/* Always drop to windowed first: SDL will not switch DIRECTLY between two
+	 * fullscreen states (exclusive<->desktop) or re-apply a new exclusive mode
+	 * while already fullscreen, so a naked SetWindowFullscreen from the menu
+	 * silently no-ops. Clearing the flag first makes every transition apply. */
+	SDL_SetWindowFullscreen(g_window, 0);
+
+	if (fullscreen == 1) /* exclusive fullscreen at the requested resolution */
+	{
+		SDL_DisplayMode want, got;
+		SDL_zero(want);
+		want.w = width;
+		want.h = height;
+		int disp = SDL_GetWindowDisplayIndex(g_window);
+		if (disp < 0)
+			disp = 0;
+		if (SDL_GetClosestDisplayMode(disp, &want, &got) != NULL)
+			SDL_SetWindowDisplayMode(g_window, &got);
+		SDL_SetWindowSize(g_window, width, height);
+		SDL_SetWindowFullscreen(g_window, SDL_WINDOW_FULLSCREEN);
+	}
+	else if (fullscreen == 2) /* borderless = desktop mode, resolution ignored */
+	{
+		SDL_SetWindowFullscreen(g_window, SDL_WINDOW_FULLSCREEN_DESKTOP);
+	}
+	else /* windowed */
+	{
+		SDL_SetWindowSize(g_window, width, height);
+		SDL_SetWindowPosition(g_window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
+	}
+
+	SDL_GetWindowSize(g_window, &g_windowWidth, &g_windowHeight);
+	GR_ResetDevice();
+	PsyX_UpdateMouseConfinement();
 }
 
 void PsyX_WaitForTimestep(int count)

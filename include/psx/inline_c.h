@@ -26,6 +26,20 @@ extern int CFC2_S(int reg);
 /* performs cop2 opcode */
 extern int doCOP2(int op);
 
+/* PGXP exact-transform twin capture (PsyX_GTE.cpp). Each folds an
+ * `if (!g_PsxUsePgxp) return;` in as its first act, so these are no-ops with
+ * PGXP off. The macro-site calls below fire unconditionally (in both the game
+ * build AND PsyCross's own libgte.c, whose SetRotMatrix/SetTransMatrix FUNCTION
+ * bodies route through these macros — the world/camera matrix uses the function
+ * form). The MIPS matching build is unaffected because it compiles the PSX SDK
+ * inline_c.h, never this PsyCross copy. */
+extern void PGXP_MatrixSetRot(const void* matrix);
+extern void PGXP_MatrixSetTrans(const void* matrix);
+extern void PGXP_VectorLoad(const void* vector, int slot);
+extern void PGXP_MatrixLoadColumn(const void* column);
+extern void PGXP_MatrixStoreColumn(void* column);
+extern void PGXP_MatrixCaptureCurrent(void* matrix);
+
 #if defined(_LANGUAGE_C_PLUS_PLUS)||defined(__cplusplus)||defined(c_plusplus)
 }
 #endif
@@ -200,7 +214,8 @@ extern int doCOP2(int op);
 		CTC2(*(uint*)((char*)(r0)+4), 1);\
 		CTC2(*(uint*)((char*)(r0)+8), 2);\
 		CTC2(*(uint*)((char*)(r0)+12), 3);\
-		CTC2(*(uint*)((char*)(r0)+16), 4);}
+		CTC2(*(uint*)((char*)(r0)+16), 4);\
+		PGXP_MatrixSetRot((const void*)(r0));}
 
 // load ctc2 5-7
 #define gte_SetTransVector( r0 )\
@@ -212,7 +227,8 @@ extern int doCOP2(int op);
 #define gte_SetTransMatrix( r0 ) \
 	{	CTC2(*(uint*)((char*)(r0)+20), 5);\
 		CTC2(*(uint*)((char*)(r0)+24), 6);\
-		CTC2(*(uint*)((char*)(r0)+28), 7);}
+		CTC2(*(uint*)((char*)(r0)+28), 7);\
+		PGXP_MatrixSetTrans((const void*)(r0));}
 
 // ctc2 8-12
 #define gte_SetLightMatrix( r0 )\

@@ -106,9 +106,16 @@
 #endif
 */
 
+/* VRAM holds each 16-bit PSX pixel as two bytes, and the shaders decode it with
+ * floor(sample.rg * 255.0 + 0.5), so only 8 bits per channel are ever observed.
+ * RG32F therefore bought nothing but made GR_UpdateVRAM upload 1024x512 bytes
+ * into a 4 MB float texture, forcing a per-texel byte->float conversion in the
+ * driver every frame. RG8 is the same 8-bit-normalised value to the shader, at
+ * 1 MB and a straight copy. Costs a few ms on fast drivers; on weak GL 3.1
+ * iGPUs the converting path is the difference between playable and ~3 FPS. */
 #if defined(RENDERER_OGL)
 #	define VRAM_FORMAT            GL_RG
-#	define VRAM_INTERNAL_FORMAT   GL_RG32F
+#	define VRAM_INTERNAL_FORMAT   GL_RG8
 #elif defined(RENDERER_OGLES)
 #	define VRAM_FORMAT            GL_LUMINANCE_ALPHA
 #	define VRAM_INTERNAL_FORMAT   GL_LUMINANCE_ALPHA
@@ -117,10 +124,19 @@
 #define VRAM_WIDTH		(1024)
 #define VRAM_HEIGHT		(512)
 
+/* One entry per 16-bit VRAM value, indexed by (high byte, low byte). */
+#define LUT_WIDTH		(256)
+#define LUT_HEIGHT		(256)
+
 #define TPAGE_WIDTH		(256)
 #define TPAGE_HEIGHT	(256)
 
-#define MAX_VERTEX_BUFFER_SIZE	(1 << (sizeof(ushort) * 8))
+/* Was (1 << 16) = 65536, matching the u_short GPUDrawSplit indices. The whole-town
+ * render mode (docs/WholeMap_Far_Projection_Task.md) submits far more geometry in
+ * one frame than a streamed scene, so the ceiling is raised and the split indices
+ * widened to unsigned int (GPUDrawSplit). Output-neutral for normal play — the
+ * buffer is only ever filled to g_vertexIndex, and a streamed frame stays tiny. */
+#define MAX_VERTEX_BUFFER_SIZE	(1 << 18)
 
 #pragma pack(push,1)
 typedef struct
@@ -153,6 +169,14 @@ typedef struct
 	 * (zero) verts and 2D prims are never lit. */
 	float		vsx, vsy, vsz;
 } GrVertex;
+
+typedef struct GrModernVertex
+{
+	float x, y, page, clut, z, u, v;
+	u_char r, g, b, a;
+	char tcx, tcy, fog, reserved;
+	float ppx, ppy, ppw, nx, ny, nz, vsx, vsy, vsz;
+} GrModernVertex;
 #pragma pack(pop)
 
 typedef enum
@@ -211,6 +235,19 @@ extern void			GR_StoreFrameBuffer(int x, int y, int w, int h);
 extern void			GR_UpdateVRAM();
 extern void			GR_ReadFramebufferDataToVRAM();
 
+/* PC port: framebuffer feedback. Silent Hill reads rendered pixels back from
+ * VRAM (Screen_BackgroundMotionBlur = the Harry-running loading-screen trail;
+ * the per-map ghosting/dream overlays), so the composed frame must be present
+ * in the PSX display-buffer pages. GR_SetPsxDisplayBuffers records where those
+ * pages are (the PC libgs stub collapses both display envs to (0,0), so
+ * activeDispEnv.disp cannot be used); GR_StoreFrameBufferPsx packs the frame
+ * into them each present, and GR_RepackFrameToVramBuffers restores it after a
+ * full vram[] re-upload. The store is a PACKING SHADER, not a blit: VRAM is
+ * GL_RG8 holding the two bytes of a 16-bit RGB555 pixel. */
+extern void			GR_SetPsxDisplayBuffers(int x0, int y0, int x1, int y1, int w, int h);
+extern void			GR_StoreFrameBufferPsx(void);
+extern void			GR_RepackFrameToVramBuffers(void);
+
 /* PC port: directly upload a vram[] sub-region to BOTH double-buffered VRAM
  * textures, bypassing the swap-then-upload dance. Used by the paper-map
  * TIM-protect helper to defeat any unfound framebuffer→GPU-texture path. */
@@ -236,19 +273,31 @@ extern void			GR_SetBlendMode(BlendMode blendMode);
 extern void			GR_SetPolygonOffset(float ofs);
 extern void			GR_SetStencilMode(int drawPrim);
 extern void			GR_EnableDepth(int enable);
+extern void			GR_SetDepthFuncAlways(int enable);
 extern void			GR_SetScissorState(int enable);
 extern void			GR_SetOffscreenState(const RECT16* offscreenRect, int enable);
 extern void			GR_SetupClipMode(const RECT16* clipRect, int enable);
 extern void			GR_SetViewPort(int x, int y, int width, int height);
 extern void			GR_SetTexture(TextureID texture, TexFormat texFormat);
-extern void			GR_SetOverrideTextureSize(int width, int height);
+extern void			GR_SetOverrideTextureSize(int width, int height, int offsetX, int offsetY, int hiresW, int hiresH);
 extern void			GR_SetWireframe(int enable);
 
 extern void			GR_DestroyTexture(TextureID texture);
 extern void			GR_Clear(int x, int y, int w, int h, unsigned char r, unsigned char g, unsigned char b);
 extern void			GR_ClearVRAM(int x, int y, int w, int h, unsigned char r, unsigned char g, unsigned char b);
 extern void			GR_UpdateVertexBuffer(const GrVertex* vertices, int count);
+extern void			GR_UpdateModernVertexBuffer(const GrModernVertex* vertices, int count);
+extern int			GR_DrawModernMesh(unsigned int mesh_handle);
 extern void			GR_DrawTriangles(int start_vertex, int triangles);
+
+/* Flashlight shadow map depth pre-pass (see g_PsyX_UseFlashlightShadows). Call
+ * GR_ShadowPassBegin() once after GR_UpdateVertexBuffer while the frame VAO is
+ * still bound, replay opaque split ranges via GR_ShadowPassDraw(), then
+ * GR_ShadowPassEnd(). Guarded by GR_FlashlightShadowActive(). */
+extern int			GR_FlashlightShadowActive(void);
+extern void			GR_ShadowPassBegin(void);
+extern void			GR_ShadowPassDraw(int start_vertex, int num_verts);
+extern void			GR_ShadowPassEnd(void);
 
 extern void			GR_PushDebugLabel(const char* label);
 extern void			GR_PopDebugLabel();

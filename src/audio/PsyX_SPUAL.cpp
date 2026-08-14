@@ -4,6 +4,7 @@
 #include "psx/libetc.h"
 #include "psx/libmath.h"
 #include "PsyX_SPUAL.h"
+#include "PsyX/PsyX_public.h" /* g_PsyX_SfxOverride */
 
 #include <string.h>
 #include <assert.h>
@@ -13,6 +14,42 @@
 
 #ifndef __EMSCRIPTEN__
 #include <AL/efx.h>
+#endif
+
+/* ALC_SOFT_output_mode / loopback channel tokens. Values are ABI-stable;
+ * bare OpenAL 1.1 headers (macOS system framework) lack them, so define
+ * fallbacks — every use is still gated on a runtime extension check. */
+#ifndef ALC_OUTPUT_MODE_SOFT
+#define ALC_OUTPUT_MODE_SOFT  0x19AC
+#define ALC_ANY_SOFT          0x19AD
+#define ALC_STEREO_BASIC_SOFT 0x19AE
+#define ALC_STEREO_UHJ_SOFT   0x19AF
+#define ALC_STEREO_HRTF_SOFT  0x19B2
+#endif
+#ifndef ALC_MONO_SOFT
+#define ALC_MONO_SOFT   0x1500
+#define ALC_STEREO_SOFT 0x1501
+#define ALC_QUAD_SOFT   0x1503
+#endif
+#ifndef ALC_SURROUND_5_1_SOFT
+#define ALC_SURROUND_5_1_SOFT 0x1504
+#define ALC_SURROUND_6_1_SOFT 0x1505
+#define ALC_SURROUND_7_1_SOFT 0x1506
+#endif
+#ifndef ALC_SOFT_HRTF
+typedef ALCboolean(ALC_APIENTRY* LPALCRESETDEVICESOFT)(ALCdevice* device, const ALCint* attribs);
+#endif
+
+/* This TU is compiled with -fvisibility=hidden on ELF so its global OpenAL
+ * EFX function-pointer variables do not interpose libopenal for other
+ * modules (see PsyCross/CMakeLists.txt). The PsyX_SPUAL_ API below, however,
+ * is called directly by map overlay .so's, which on Linux now import the host
+ * exe's single PsyCross instance instead of linking their own copy, so these
+ * entry points must stay default-visibility to be exported via -rdynamic. */
+#if defined(__GNUC__) && !defined(_WIN32)
+#  define PSX_API_EXPORT __attribute__((visibility("default")))
+#else
+#  define PSX_API_EXPORT
 #endif
 
 // TODO: implement XA, implement ADSR
@@ -73,15 +110,83 @@ static SDL_mutex* g_SpuMutex = NULL;
 static int g_spuInit = 0;
 static int s_spuMallocVal = 0;
 
-/* SPU ADSR envelope master gate. Default OFF: the envelope path is the same
- * feature that previously deadlocked when ticked from the render thread, so it
- * ships disabled (audio byte-identical to known-good) and is opt-in via the
- * `adsr 1` console command until validated. When OFF, SetKey/SetVoiceAttr/
- * Update all take their pre-envelope code paths. */
-int g_SpuAdsrEnabled = 0;
+/* SPU ADSR envelope master gate. Default ON since 2026-07-06: the historical
+ * render-thread deadlock was fixed by moving the tick to the audio-timing
+ * thread, the key-status release-tail hang was fixed (keyed-off enveloped
+ * voices report free immediately), and side-by-side PSX comparison confirmed
+ * envelopes are required for the sequenced BGM's instrument fades. Opt-out via
+ * the `adsr 0` console command or `adsr = 0` in config.cfg. When OFF,
+ * SetKey/SetVoiceAttr/Update all take their pre-envelope code paths. */
+int g_SpuAdsrEnabled = 1;
 
-void PsyX_SPUAL_SetAdsrEnabled(int on) { g_SpuAdsrEnabled = on ? 1 : 0; }
-int  PsyX_SPUAL_GetAdsrEnabled(void)   { return g_SpuAdsrEnabled; }
+PSX_API_EXPORT void PsyX_SPUAL_SetAdsrEnabled(int on) { g_SpuAdsrEnabled = on ? 1 : 0; }
+PSX_API_EXPORT int  PsyX_SPUAL_GetAdsrEnabled(void)   { return g_SpuAdsrEnabled; }
+
+/* Speaker layout (config key audio_output): 0=auto 1=stereo 2=quad 3=5.1
+ * 4=7.1 5=hrtf. AL-free enum so the console/launcher (and a future non-AL
+ * backend) can share it. "auto" passes NO ALC_OUTPUT_MODE_SOFT attribute:
+ * OpenAL Soft then detects the system layout itself AND the user's
+ * alsoft.ini keeps authority (the attribute would override it). Voice
+ * routing trusts only the ACHIEVED mode — a 5.1 request on a stereo
+ * endpoint silently degrades, it does not error. */
+enum
+{
+	PSYX_SPK_AUTO = 0,
+	PSYX_SPK_STEREO,
+	PSYX_SPK_QUAD,
+	PSYX_SPK_51,
+	PSYX_SPK_71,
+	PSYX_SPK_HRTF,
+};
+static int s_speakersRequest  = PSYX_SPK_AUTO;
+static int s_speakersAchieved = PSYX_SPK_AUTO;
+static int s_surroundActive   = 0; // achieved layout has rear speakers
+
+/* Emitter azimuth side-channel (PSX Q12 angle: 0 = dead ahead, positive =
+ * right, +/-2048 = behind). Game code recovers the true camera-relative
+ * angle before it collapses direction to an L/R balance and stashes it
+ * here; the next key-on's start-address write claims it.
+ *
+ * Ownership: the arm -> key-on chain is synchronous on the arming thread,
+ * while sequencer note-ons run on the intr/timer thread — the claim is
+ * therefore restricted to WDSA writes from the ARMING thread, so a BGM
+ * note interleaving between arm and key-on can neither steal the angle
+ * nor get mispositioned by it. The TTL expires orphans (key-on failed:
+ * no free voice, bad VAB) that would otherwise wait to mistag a later
+ * same-thread sound. */
+static int           s_nextAzimuthQ12    = 0;
+static int           s_nextAzimuthValid  = 0;
+static SDL_threadID  s_nextAzimuthThread = 0;
+static Uint32        s_nextAzimuthMs     = 0;
+#define AZIMUTH_STASH_TTL_MS 100
+
+PSX_API_EXPORT void PsyX_SPUAL_SetOutputMode(int mode) { s_speakersRequest = mode; }
+PSX_API_EXPORT int  PsyX_SPUAL_GetOutputMode(void)     { return s_speakersAchieved; }
+PSX_API_EXPORT int  PsyX_SPUAL_GetSurroundActive(void) { return s_surroundActive; }
+
+/* Arm the azimuth for the sound about to key on (claimed by the next
+ * start-address write in SetVoiceAttr). Clear covers the compute-without-
+ * play case so an unrelated later key-on can't inherit a stale angle. */
+PSX_API_EXPORT void PsyX_SPUAL_SetNextKeyOnAzimuth(int azimuthQ12)
+{
+	SDL_LockMutex(g_SpuMutex);
+	s_nextAzimuthQ12    = azimuthQ12;
+	s_nextAzimuthThread = SDL_ThreadID();
+	s_nextAzimuthMs     = SDL_GetTicks();
+	s_nextAzimuthValid  = 1;
+	SDL_UnlockMutex(g_SpuMutex);
+}
+
+PSX_API_EXPORT void PsyX_SPUAL_ClearNextKeyOnAzimuth(void)
+{
+	SDL_LockMutex(g_SpuMutex);
+	s_nextAzimuthValid = 0;
+	SDL_UnlockMutex(g_SpuMutex);
+}
+
+/* Live-update path (Sd_SfxAttributesUpdate): the voice is already playing
+ * and identified; the following SpuSetVoiceAttr volume write repositions it. */
+PSX_API_EXPORT void PsyX_SPUAL_SetVoiceAzimuth(int voiceIdx, int azimuthQ12);
 
 typedef enum
 {
@@ -101,18 +206,27 @@ typedef struct
 	ushort sampledirty;
 	ushort reverb;
 
-	// PSX SPU ADSR envelope (PC port). Only engaged for looping voices that
-	// programmed a real ADSR (adsr1/adsr2 != 0); one-shot SFX/voices keep the
-	// plain static-gain path so this never alters the large body of working
-	// sounds. Hardware runs the envelope at 44100Hz on a 0..0x7FFF level and
-	// multiplies the sample by it; without it a looping sample (e.g. the
-	// clock bell) rings forever.
+	// PSX SPU ADSR envelope (PC port). Engaged for EVERY keyed voice that
+	// programmed a real ADSR (adsr1/adsr2 != 0), looping or not — the SPU
+	// hardware doesn't distinguish. One-shot melodic voices (bells, chimes)
+	// need the release ring-out and the decay/sustain shaping just as much
+	// as loops; gating on looping made every sequencer note-off a hard cut.
+	// Hardware runs the envelope at 44100Hz on a 0..0x7FFF level and
+	// multiplies the sample by it.
 	int      envPhase;     // EnvPhase
 	int      envLevel;     // 0..0x7FFF
 	int      envCounter;   // accumulated 44100Hz samples toward next step
 	float    baseGain;     // volume-derived gain before envelope
-	ushort   hasEnvelope;  // adsr programmed + looping
+	ushort   hasEnvelope;  // adsr programmed
 	ushort   looping;      // AL_LOOPING was set for the current sample
+
+	// Spatial routing (PC surround). azimuth claimed from the key-on stash
+	// at each start-address write, so voice reuse can't inherit stale state.
+	ushort   isWide;       // libsd wide-stereo (negated right volume) latch
+	ushort   azimuthValid;
+	int      azimuthQ12;   // PSX Q12 angle: 0 ahead, positive right
+
+	u_int    relStartMs;   // SDL tick at key-off; caps pathological release tails
 } SPUALVoice;
 
 const int s_spuVoiceCount = 24;
@@ -136,8 +250,35 @@ LPALEFFECTF alEffectf = NULL;
 LPALGENAUXILIARYEFFECTSLOTS alGenAuxiliaryEffectSlots = NULL;
 LPALDELETEAUXILIARYEFFECTSLOTS alDeleteAuxiliaryEffectSlots = NULL;
 LPALAUXILIARYEFFECTSLOTI alAuxiliaryEffectSloti = NULL;
+LPALAUXILIARYEFFECTSLOTF alAuxiliaryEffectSlotf = NULL;
 
 #endif
+
+/* SPU reverb depth (wet level). The game drives this constantly: a per-track
+ * depth on every BGM bank load (g_Sd_ReverbDepths), a per-tick RAMP from 0 to
+ * the track target on sequence (re)start (libsd replay_reverb_set — the PSX
+ * "music fades in with its echo"), and SdSetRVol/SdUtSetReverbDepth one-shots.
+ * PSX depth is s16 (typical game values (u8 depth)<<8, i.e. 2560..30720);
+ * mapped to the OpenAL aux effect SLOT gain so it applies live to every
+ * routed voice without touching the effect parameters. */
+static short g_reverbDepthL = 0;
+static short g_reverbDepthR = 0;
+static int   g_reverbMode = 1;
+float g_SpuReverbDepthScale = 2.0f; /* wet = |depth|/32768 * scale; `revscale` console knob */
+
+static void ApplyReverbWet(void)
+{
+#ifndef __EMSCRIPTEN__
+	if (!g_ALEffectsSupported || !alAuxiliaryEffectSlotf)
+		return;
+	int dl = g_reverbDepthL < 0 ? -g_reverbDepthL : g_reverbDepthL;
+	int dr = g_reverbDepthR < 0 ? -g_reverbDepthR : g_reverbDepthR;
+	float wet = (float)(dl > dr ? dl : dr) / 32768.0f * g_SpuReverbDepthScale;
+	if (wet < 0.0f) wet = 0.0f;
+	if (wet > 1.0f) wet = 1.0f;
+	alAuxiliaryEffectSlotf(g_ALEffectSlots[g_currEffectSlotIdx], AL_EFFECTSLOT_GAIN, wet);
+#endif
+}
 
 static void InitOpenAlEffects()
 {
@@ -156,6 +297,7 @@ static void InitOpenAlEffects()
 	alGenAuxiliaryEffectSlots = (LPALGENAUXILIARYEFFECTSLOTS)alGetProcAddress("alGenAuxiliaryEffectSlots");
 	alDeleteAuxiliaryEffectSlots = (LPALDELETEAUXILIARYEFFECTSLOTS)alGetProcAddress("alDeleteAuxiliaryEffectSlots");
 	alAuxiliaryEffectSloti = (LPALAUXILIARYEFFECTSLOTI)alGetProcAddress("alAuxiliaryEffectSloti");
+	alAuxiliaryEffectSlotf = (LPALAUXILIARYEFFECTSLOTF)alGetProcAddress("alAuxiliaryEffectSlotf");
 
 	int max_sends = 0;
 	alcGetIntegerv(g_ALCdevice, ALC_MAX_AUXILIARY_SENDS, 1, &max_sends);
@@ -187,6 +329,107 @@ static void InitOpenAlEffects()
 #endif
 }
 
+#ifndef __EMSCRIPTEN__
+
+static int SpeakersToAlcOutputMode(int spk)
+{
+	switch (spk)
+	{
+	case PSYX_SPK_STEREO: return ALC_STEREO_BASIC_SOFT;
+	case PSYX_SPK_QUAD:   return ALC_QUAD_SOFT;
+	case PSYX_SPK_51:     return ALC_SURROUND_5_1_SOFT;
+	case PSYX_SPK_71:     return ALC_SURROUND_7_1_SOFT;
+	case PSYX_SPK_HRTF:   return ALC_STEREO_HRTF_SOFT;
+	}
+	return ALC_ANY_SOFT;
+}
+
+static int AlcOutputModeToSpeakers(int alcMode)
+{
+	switch (alcMode)
+	{
+	case ALC_QUAD_SOFT:           return PSYX_SPK_QUAD;
+	case ALC_SURROUND_5_1_SOFT:
+	case ALC_SURROUND_6_1_SOFT:   return PSYX_SPK_51;
+	case ALC_SURROUND_7_1_SOFT:   return PSYX_SPK_71;
+	case ALC_STEREO_HRTF_SOFT:    return PSYX_SPK_HRTF;
+	}
+	return PSYX_SPK_STEREO;
+}
+
+static const char* s_speakerModeNames[] = { "auto", "stereo", "quad", "5.1", "7.1", "hrtf" };
+
+/* attrs must have room for 8 ints. The output-mode pair is added only for an
+ * explicit override — never for auto (see the enum comment above). */
+static void BuildContextAttrs(int* attrs)
+{
+	int n = 0;
+
+	attrs[n++] = ALC_FREQUENCY;
+	attrs[n++] = 44100;
+	attrs[n++] = ALC_MAX_AUXILIARY_SENDS;
+	attrs[n++] = 2;
+
+	if (s_speakersRequest != PSYX_SPK_AUTO && g_ALCdevice &&
+	    alcIsExtensionPresent(g_ALCdevice, "ALC_SOFT_output_mode"))
+	{
+		attrs[n++] = ALC_OUTPUT_MODE_SOFT;
+		attrs[n++] = SpeakersToAlcOutputMode(s_speakersRequest);
+	}
+
+	attrs[n] = 0;
+}
+
+static void QueryAchievedOutputMode(void)
+{
+	int alcMode = 0;
+
+	s_speakersAchieved = PSYX_SPK_AUTO;
+	s_surroundActive   = 0;
+
+	if (!g_ALCdevice || !alcIsExtensionPresent(g_ALCdevice, "ALC_SOFT_output_mode"))
+		return;
+
+	alcGetIntegerv(g_ALCdevice, ALC_OUTPUT_MODE_SOFT, 1, &alcMode);
+	s_speakersAchieved = AlcOutputModeToSpeakers(alcMode);
+	s_surroundActive   = s_speakersAchieved == PSYX_SPK_QUAD ||
+	                     s_speakersAchieved == PSYX_SPK_51 ||
+	                     s_speakersAchieved == PSYX_SPK_71;
+
+	eprintinfo("speaker layout: %s (requested %s, ALC mode 0x%x)%s\n",
+		s_speakerModeNames[s_speakersAchieved], s_speakerModeNames[s_speakersRequest],
+		alcMode, s_surroundActive ? " [surround routing active]" : "");
+}
+
+#endif // __EMSCRIPTEN__
+
+/* Live layout switch (console AUDIOOUT): renegotiates the output mode on the
+ * open device via alcResetDeviceSOFT — sources keep playing, only the mix
+ * format flips. Returns 1 on success; 0 means restart required. Called
+ * before init it just latches the request for InitSound. */
+PSX_API_EXPORT int PsyX_SPUAL_ApplyOutputMode(int mode)
+{
+	s_speakersRequest = mode;
+
+#ifndef __EMSCRIPTEN__
+	if (!g_ALCdevice)
+		return 1;
+
+	LPALCRESETDEVICESOFT resetFn = (LPALCRESETDEVICESOFT)alcGetProcAddress(g_ALCdevice, "alcResetDeviceSOFT");
+	if (!resetFn)
+		return 0;
+
+	int attrs[8];
+	BuildContextAttrs(attrs);
+
+	int ok = resetFn(g_ALCdevice, attrs) == ALC_TRUE;
+	QueryAchievedOutputMode();
+	return ok;
+#else
+	return 0;
+#endif
+}
+
 int PsyX_SPUAL_InitSound()
 {
 	if (!g_SpuMutex)
@@ -200,16 +443,6 @@ int PsyX_SPUAL_InitSound()
 	int numDevices, alErr, i;
 	const char* devices;
 	const char* devStrptr;
-
-	// out_channel_formats snd_outputchannels
-	static int al_context_params[] =
-	{
-		ALC_FREQUENCY, 44100,
-#ifndef __EMSCRIPTEN__
-		ALC_MAX_AUXILIARY_SENDS, 2,
-#endif
-		0
-	};
 
 	if (g_ALCdevice)
 		return 1;
@@ -245,6 +478,8 @@ int PsyX_SPUAL_InitSound()
 	}
 
 #ifndef __EMSCRIPTEN__
+	int al_context_params[8];
+	BuildContextAttrs(al_context_params);
 	g_ALCcontext = alcCreateContext(g_ALCdevice, al_context_params);
 #else
 	g_ALCcontext = alcCreateContext(g_ALCdevice, NULL);
@@ -269,6 +504,10 @@ int PsyX_SPUAL_InitSound()
 	// Setup defaults
 	alListenerf(AL_GAIN, 1.0f);
 	alDistanceModel(AL_NONE);
+
+#ifndef __EMSCRIPTEN__
+	QueryAchievedOutputMode();
+#endif
 
 	// create channels
 	for (i = 0; i < s_spuVoiceCount; i++)
@@ -545,6 +784,11 @@ static int decodeSound(u_char* iData, int soundSize, short* oData, int* loopStar
 	return k;
 }
 
+/* Optional per-sound sample replacement, installed by the host port. Left NULL
+ * here so PsyCross still links and behaves identically on its own — the host
+ * assigns it when loose-file sound mods are in play. */
+extern "C" PsyX_SfxOverrideFn g_PsyX_SfxOverride = NULL;
+
 static void UpdateVoiceSample(SPUALVoice* voice)
 {
 	static short waveBuffer[SPU_REALMEMSIZE];
@@ -564,6 +808,28 @@ static void UpdateVoiceSample(SPUALVoice* voice)
 
 	loopStart = 0;
 	loopLen = 0;
+
+	{
+		// Loose per-sound replacement (pc_sfx_override.c). The registry is keyed
+		// on the SPU address a voice plays from, so only replaced samples divert
+		// here — everything else in the same bank decodes from the original data
+		// below, unchanged. PC-owned PCM has no ADPCM size ceiling, which is what
+		// lifts the limit on how big a replacement sound can be.
+		const short* modPcm = NULL;
+		int modCount = 0;
+
+		if (g_PsyX_SfxOverride != NULL &&
+			g_PsyX_SfxOverride((int)voice->attr.addr, &modPcm, &modCount) && modCount > 0)
+		{
+			alSourcei(alSource, AL_BUFFER, 0);
+			// Uploaded at the same 44100 the native path uses so the voice's pitch
+			// scales it exactly as it would have scaled the original: a file at the
+			// rate the Audio tool exported plays at the intended speed.
+			alBufferData(alBuffer, AL_FORMAT_MONO16, modPcm, modCount * sizeof(short), 44100);
+			alSourcei(alSource, AL_BUFFER, alBuffer);
+			return;
+		}
+	}
 
 	count = decodeSound(s_SpuMemory.samplemem + voice->attr.addr, SPU_MEMSIZE - voice->attr.addr, waveBuffer, &loopStart, &loopLen, 1);
 
@@ -774,10 +1040,36 @@ void PsyX_SPUAL_Update()
 		if (alSource == AL_NONE)
 			continue;
 
+		// A non-looping voice whose buffer ran out (never keyed off) must not
+		// stay in SUSTAIN forever — the phase-based key status would read it
+		// busy for good and starve the voice allocator. Real SPU hardware
+		// forces the envelope to zero at sample end (END+MUTE); mirror it.
+		{
+			ALint state = AL_STOPPED;
+			alGetSourcei(alSource, AL_SOURCE_STATE, &state);
+			if (state != AL_PLAYING && state != AL_PAUSED)
+			{
+				voice->envLevel    = 0;
+				voice->envPhase    = ENV_OFF;
+				voice->hasEnvelope = 0;
+				continue;
+			}
+		}
+
 		int level = EnvelopeAdvance(voice, samples);
 		float env = (float)level / (float)ADSR_MAX;
 
 		alSourcef(alSource, AL_GAIN, voice->baseGain * env);
+
+		// Since key-off keeps AL_LOOPING (the SPU loops the sustain block
+		// through release), a near-infinite programmed release would ring a
+		// looped source forever. Nothing musical needs more than a few
+		// seconds; cap the tail.
+		if (voice->envPhase == ENV_RELEASE && (now - voice->relStartMs) > 10000)
+		{
+			voice->envLevel = 0;
+			voice->envPhase = ENV_OFF;
+		}
 
 		if (voice->envPhase == ENV_OFF)
 		{
@@ -864,6 +1156,17 @@ void PsyX_SPUAL_GetVoiceAttr(SpuVoiceAttr* psxAttrib)
 	SDL_UnlockMutex(g_SpuMutex);
 }
 
+PSX_API_EXPORT void PsyX_SPUAL_SetVoiceAzimuth(int voiceIdx, int azimuthQ12)
+{
+	if (!g_spuInit || voiceIdx < 0 || voiceIdx >= s_spuVoiceCount)
+		return;
+
+	SDL_LockMutex(g_SpuMutex);
+	g_SpuVoices[voiceIdx].azimuthQ12   = azimuthQ12;
+	g_SpuVoices[voiceIdx].azimuthValid = 1;
+	SDL_UnlockMutex(g_SpuMutex);
+}
+
 void PsyX_SPUAL_SetVoiceAttr(SpuVoiceAttr* psxAttrib)
 {
 	if (!g_spuInit)
@@ -893,6 +1196,26 @@ void PsyX_SPUAL_SetVoiceAttr(SpuVoiceAttr* psxAttrib)
 					voice->sampledirty++;
 
 				voice->attr.addr = psxAttrib->addr;
+
+				// A start-address write accompanies every key-on: claim the
+				// azimuth the game stashed for the upcoming sound, or clear
+				// stale spatial state when there is none (voice reuse — a
+				// sequencer note must not inherit the last SFX's position).
+				// Claim only on the arming thread and within the TTL: the
+				// arm -> key-on chain is synchronous, so an intr-thread BGM
+				// note or an expired orphan (failed key-on) never matches.
+				if (s_nextAzimuthValid &&
+				    s_nextAzimuthThread == SDL_ThreadID() &&
+				    (Uint32)(SDL_GetTicks() - s_nextAzimuthMs) <= AZIMUTH_STASH_TTL_MS)
+				{
+					voice->azimuthValid = 1;
+					voice->azimuthQ12   = s_nextAzimuthQ12;
+					s_nextAzimuthValid  = 0;
+				}
+				else
+				{
+					voice->azimuthValid = 0;
+				}
 			}
 
 			if (psxAttrib->mask & SPU_VOICE_LSAX)
@@ -913,8 +1236,22 @@ void PsyX_SPUAL_SetVoiceAttr(SpuVoiceAttr* psxAttrib)
 			if (psxAttrib->mask & SPU_VOICE_VOLR)
 				voice->attr.volume.right = psxAttrib->volume.right;
 
-			float left_gain = (float)(voice->attr.volume.left) / (float)(16384);
-			float right_gain = (float)(voice->attr.volume.right) / (float)(16384);
+			// libsd negates volume.right for "wide stereo" (diffuse ambience)
+			// channels — KDT CC 0x0F -> wide_flag_21. Latch it from the signs
+			// while both sides are live; (0,0) keeps the last state so a note
+			// fading to silence doesn't snap back to the front stage.
+			if (voice->attr.volume.left > 0 && voice->attr.volume.right < 0)
+				voice->isWide = 1;
+			else if (voice->attr.volume.left != 0 || voice->attr.volume.right != 0)
+				voice->isWide = 0;
+
+			// PSX direct-mode voice volume is signed: negative = phase-inverted
+			// playback at |vol| amplitude (the wide-stereo trick above). A mono
+			// OpenAL source can't invert one channel, and averaging signed gains
+			// cancels L + (-L) to 0 — take magnitudes so wide voices keep their
+			// loudness.
+			float left_gain = fabsf((float)(voice->attr.volume.left)) / (float)(16384);
+			float right_gain = fabsf((float)(voice->attr.volume.right)) / (float)(16384);
 
 			if(left_gain > 1.0f)
 				left_gain = 1.0f;
@@ -922,12 +1259,35 @@ void PsyX_SPUAL_SetVoiceAttr(SpuVoiceAttr* psxAttrib)
 			if(right_gain > 1.0f)
 				right_gain = 1.0f;
 
-			float pan = (acosf(left_gain) + asinf(right_gain)) / ((float)(M_PI)); // average angle in [0,1]
-			pan = 2.0f * pan - 1.0f; // convert to [-1, 1]
-			pan = pan * 0.5f; // 0.5 = sin(30') for a +/- 30 degree arc
-			alSource3f(alSource, AL_POSITION, pan * STEREO_FACTOR, 0, -sqrtf(1.0f - pan * pan));
+			if (voice->azimuthValid)
+			{
+				// True 3D: game code recovered the emitter's camera-relative
+				// azimuth before collapsing it to L/R balance — place on the
+				// full circle (rears included on surround layouts). Gain uses
+				// the louder side: the balance attenuation is already baked
+				// into L/R and AL panning would apply it a second time.
+				float az = (float)voice->azimuthQ12 * (float)(M_PI / 2048.0);
+				alSource3f(alSource, AL_POSITION, sinf(az), 0.0f, -cosf(az));
 
-			voice->baseGain = (left_gain + right_gain) * 0.5f;
+				voice->baseGain = (left_gain > right_gain) ? left_gain : right_gain;
+			}
+			else
+			{
+				float pan = (acosf(left_gain) + asinf(right_gain)) / ((float)(M_PI)); // average angle in [0,1]
+				pan = 2.0f * pan - 1.0f; // convert to [-1, 1]
+				pan = pan * 0.5f; // 0.5 = sin(30') for a +/- 30 degree arc
+
+				// Wide (diffuse) voices belong on the surrounds when the
+				// layout has them: mirror the frontal arc behind the listener.
+				// On stereo output this is a no-op (front placement), keeping
+				// the pre-surround mix byte-identical.
+				float z = sqrtf(1.0f - pan * pan);
+				if (s_surroundActive && voice->isWide)
+					z = -z;
+				alSource3f(alSource, AL_POSITION, pan * STEREO_FACTOR, 0, -z);
+
+				voice->baseGain = (left_gain + right_gain) * 0.5f;
+			}
 
 			// While an envelope is running it owns the source gain (the tick
 			// applies baseGain*level); otherwise apply the volume directly.
@@ -987,15 +1347,22 @@ void PsyX_SPUAL_SetKey(int on_off, u_int voice_bit)
 			alSourceStop(alSource);
 			UpdateVoiceSample(voice);
 
-			// Engage the ADSR envelope only for looping voices that programmed
-			// a real envelope — those are the ones that otherwise ring forever
-			// (e.g. the clock bell). One-shot SFX/voices end on their own and
-			// keep the plain static-gain path untouched.
-			if (g_SpuAdsrEnabled && voice->looping && (voice->attr.adsr1 || voice->attr.adsr2))
+			// Engage the ADSR envelope for ANY voice that programmed one —
+			// the SPU applies it regardless of the sample's loop flag. Gating
+			// on looping voices made every one-shot sequencer note (bells,
+			// chimes, most melodic instruments) stop dead at key-off instead
+			// of ringing out through release, and skipped their decay/sustain
+			// shaping ("sudden stops", chimes cutting abruptly vs PSX).
+			if (g_SpuAdsrEnabled && (voice->attr.adsr1 || voice->attr.adsr2))
 			{
 				voice->hasEnvelope = 1;
 				EnvelopeKeyOn(voice);
-				alSourcef(alSource, AL_GAIN, 0.0f); // attack ramps from silence
+				// Pre-charge ~2ms of envelope (the tick thread's worst-case
+				// latency) so instant attacks (rate 0, MAX within 3 samples)
+				// keep their transient punch — a gunshot must not start
+				// silent. Slow ramps lose only an inaudible 2ms of curve.
+				int lvl = EnvelopeAdvance(voice, 44100 / 500);
+				alSourcef(alSource, AL_GAIN, voice->baseGain * ((float)lvl / (float)ADSR_MAX));
 			}
 			else
 			{
@@ -1007,29 +1374,27 @@ void PsyX_SPUAL_SetKey(int on_off, u_int voice_bit)
 		}
 		else
 		{
-			// Key-off means "stop sustaining the loop." Clear AL_LOOPING so a
-			// Repeat=1 sample can't keep repeating forever — without this, a
-			// one-shot SFX whose VAG carries a sustain-tail loop (e.g. a cutscene
-			// grunt/boss sound) loops endlessly because the release path below
-			// only ramps gain while the buffer keeps looping under it. With it,
-			// the voice plays out its current buffer once and stops; the release
-			// envelope still fades it naturally. Genuine ambient loops are also
-			// keyed off intentionally by the game, so stopping them here is right.
-			if (voice->looping)
-			{
-				alSourcei(alSource, AL_LOOPING, AL_FALSE);
-				voice->looping = 0;
-			}
-
 			if (g_SpuAdsrEnabled && voice->hasEnvelope && voice->envPhase != ENV_OFF)
 			{
-				// Let the release phase ring out; the tick stops the source
-				// once the envelope reaches zero (or the buffer ends, now that
-				// looping is off).
+				// Enter the release phase and let it ring out; the tick stops
+				// the source once the envelope reaches zero. AL_LOOPING is
+				// deliberately KEPT: the SPU keeps looping a sample's sustain
+				// block while release fades it — clearing it here ended
+				// looped-sustain instruments at their loop-block boundary,
+				// mid-release (the sewer "moaning" that never faded out).
+				// Pathological tails are capped by the tick via relStartMs.
 				EnvelopeKeyOff(voice);
+				voice->relStartMs = SDL_GetTicks();
 			}
 			else
 			{
+				// No envelope: PSX-less hard stop, and clear AL_LOOPING so a
+				// Repeat=1 sample can't keep repeating under a stopped voice.
+				if (voice->looping)
+				{
+					alSourcei(alSource, AL_LOOPING, AL_FALSE);
+					voice->looping = 0;
+				}
 				alSourceStop(alSource);
 			}
 		}
@@ -1037,25 +1402,47 @@ void PsyX_SPUAL_SetKey(int on_off, u_int voice_bit)
 	SDL_UnlockMutex(g_SpuMutex);
 }
 
-// With the ADSR envelope engaged, a keyed-off voice keeps its OpenAL source
-// PLAYING while the release tail rings out. The game's libsd "wait until
-// SPU_OFF" / "wait for silence" logic (smf_snd/smf_io voice scans, the cutscene
-// dialogue gate) would then see the voice as busy for the whole audible
-// ringout -> the 30s end-of-dialogue freeze. PSX SpuGetKeyStatus reflects the
-// key on/off latch, which goes OFF immediately at key-off (the voice still
-// rings out in release but reads SPU_OFF). Mirror that: a keyed-off enveloped
-// voice (phase RELEASE/OFF) reads free at once, exactly as the ADSR-disabled
-// path does (key-off -> alSourceStop -> STOPPED), while the envelope fades the
-// audio out on its own.
-static int spual_voice_keyed_on(const SPUALVoice* voice)
+// PSX SpuGetKeyStatus is a 4-state value, and the SH sound driver (libsd)
+// depends on the full distinction — collapsing it to on/off silently breaks
+// voice allocation:
+//   SPU_ON         keyed on, envelope live (attack/decay/sustain, level > 0)
+//   SPU_ON_ENV_OFF keyed on, but the envelope has decayed to 0 while held
+//   SPU_OFF_ENV_ON KEYED OFF but the release tail is still ringing out
+//   SPU_OFF        fully idle (release finished, or never keyed)
+//
+// The allocator voice_check() (smf_io.c) makes two passes: pass 1 grabs only a
+// SPU_OFF (truly-free) voice; a still-releasing SPU_OFF_ENV_ON voice is left
+// alone and only stolen in pass 2 when nothing free remains. That is exactly
+// what lets a release tail ring INTO the next note instead of being cut. The
+// old code reported every releasing voice as SPU_OFF, so pass 1 stole it and
+// rr_off-cut its tail even with the 24-voice pool half empty — the tester's
+// "BGM fades then abruptly gets cut off." SPU_ON_ENV_OFF likewise lets
+// SdAutoKeyOffCheck reclaim a decayed-but-held voice instead of it reading busy
+// forever. This does NOT reintroduce the old end-of-dialogue freeze: every
+// libsd "wait for silence" spin (sound_seq_off/sound_off/SdAutoKeyOffCheck)
+// exits on `stat == SPU_OFF_ENV_ON || stat == SPU_OFF`, and the key-on scans
+// (SdVoKeyOn/SdUtKeyOn) iterate voices rather than spinning on one — none block
+// on the release state.
+static int spual_voice_key_status(const SPUALVoice* voice)
 {
-	int ph = voice->envPhase;
-	return ph == ENV_ATTACK || ph == ENV_DECAY || ph == ENV_SUSTAIN;
+	switch (voice->envPhase)
+	{
+	case ENV_ATTACK:
+	case ENV_DECAY:
+		return SPU_ON;
+	case ENV_SUSTAIN:
+		return voice->envLevel > 0 ? SPU_ON : SPU_ON_ENV_OFF;
+	case ENV_RELEASE:
+		return voice->envLevel > 0 ? SPU_OFF_ENV_ON : SPU_OFF;
+	case ENV_OFF:
+	default:
+		return SPU_OFF;
+	}
 }
 
 int PsyX_SPUAL_GetKeyStatus(u_int voice_bit)
 {
-	int playing = 0;
+	int status = SPU_OFF;
 	SDL_LockMutex(g_SpuMutex);
 
 	for (int i = 0; i < s_spuVoiceCount; i++)
@@ -1071,20 +1458,20 @@ int PsyX_SPUAL_GetKeyStatus(u_int voice_bit)
 
 		if (g_SpuAdsrEnabled && voice->hasEnvelope)
 		{
-			playing = spual_voice_keyed_on(voice);
+			status = spual_voice_key_status(voice);
 		}
 		else
 		{
 			int state = AL_STOPPED;
 			alGetSourcei(alSource, AL_SOURCE_STATE, &state);
-			playing = (state == AL_PLAYING);
+			status = (state == AL_PLAYING) ? SPU_ON : SPU_OFF;
 		}
 		break;
 	}
 
 	SDL_UnlockMutex(g_SpuMutex);
 
-	return playing;
+	return status;
 }
 
 void PsyX_SPUAL_GetAllKeysStatus(char* status)
@@ -1102,13 +1489,13 @@ void PsyX_SPUAL_GetAllKeysStatus(char* status)
 
 		if (g_SpuAdsrEnabled && voice->hasEnvelope)
 		{
-			status[i] = spual_voice_keyed_on(voice);
+			status[i] = spual_voice_key_status(voice);
 			continue;
 		}
 
 		int state;
 		alGetSourcei(alSource, AL_SOURCE_STATE, &state);
-		status[i] = (state == AL_PLAYING);
+		status[i] = (state == AL_PLAYING) ? SPU_ON : SPU_OFF;
 	}
 	SDL_UnlockMutex(g_SpuMutex);
 }
@@ -1142,6 +1529,43 @@ int PsyX_SPUAL_SetReverb(int on_off)
 int PsyX_SPUAL_GetReverbState()
 {
 	return g_enableSPUReverb;
+}
+
+/* Reverb depth (wet level), from SpuSetReverbModeParam / SpuSetReverbDepth.
+ * maskL/maskR say which sides the caller set; the other keeps its value
+ * (matches the PSX per-side mask semantics). Called from BOTH the game
+ * thread (bank loads) and the interrupt thread (the per-tick replay ramp). */
+void PsyX_SPUAL_SetReverbDepthMasked(int maskL, int maskR, short depthL, short depthR)
+{
+	SDL_LockMutex(g_SpuMutex);
+	if (maskL) g_reverbDepthL = depthL;
+	if (maskR) g_reverbDepthR = depthR;
+	ApplyReverbWet();
+	SDL_UnlockMutex(g_SpuMutex);
+}
+
+/* Reverb mode (preset type). SH1 only ever sets mode 1 (Room) at boot and the
+ * current effect parameters were tuned for this game, so the mode is stored
+ * for readback but does not retune the effect. */
+int PsyX_SPUAL_SetReverbMode(int mode)
+{
+	int old = g_reverbMode;
+	g_reverbMode = mode;
+	return old;
+}
+
+/* Console calibration knob (`revscale`): scales depth -> wet mapping. */
+void PsyX_SPUAL_SetReverbDepthScale(float scale)
+{
+	SDL_LockMutex(g_SpuMutex);
+	g_SpuReverbDepthScale = scale;
+	ApplyReverbWet();
+	SDL_UnlockMutex(g_SpuMutex);
+}
+
+float PsyX_SPUAL_GetReverbDepthScale(void)
+{
+	return g_SpuReverbDepthScale;
 }
 
 u_int PsyX_SPUAL_SetReverbVoice(int on_off, u_int voice_bit)

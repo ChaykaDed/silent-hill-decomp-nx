@@ -122,6 +122,32 @@ void PopMatrix()
 	}
 }
 
+/* PGXP shadow registration for the RotTransPers* wrappers below.
+ *
+ * These project through PsyCross's own gte_stsxy* macros (psx/inline_c.h), which
+ * — unlike the game's gte_stsxy3c in pc_port/include — never call PGXP_StoreAddr.
+ * Nothing was ever recorded for the vertices they write, so the draw side resolved
+ * no shadow at the prim address and fell back to affine: that is why the
+ * GsSortObject4J item drawers (inventory carousel + world pickup) rendered affine
+ * no matter what use_pgxp said.
+ *
+ * `slot` is the vertex's position in the GTE's 3-deep SXY FIFO at the moment of the
+ * store (2 = newest), mirrored by the precise FIFO in PsyX_GTE.cpp. The FIFO shifts
+ * on every RTPS, so a capture must happen before any further projection. */
+extern int  g_PsxUsePgxp;
+extern void PGXP_StoreAddr(void* addr, int slot);
+
+/* Exact-transform twin provenance (PsyX_GTE.cpp). These carry the unquantized
+ * matrix product/scale results across the Q12 matrix ops so RTPS can project
+ * from full precision. All internally no-op when PGXP is off; the call sites
+ * below additionally guard on g_PsxUsePgxp so the off path is branch-only. */
+extern int  PGXP_MatrixLookup(const MATRIX* m, double exact[9]);
+extern int  PGXP_MatrixLookupCurrent(double exact[9]);
+extern void PGXP_MatrixRegister(const MATRIX* m, const double exact[9]);
+extern void PGXP_MatrixInvalidate(MATRIX* m);
+extern void PGXP_MatrixInvalidateTranslation(MATRIX* m);
+extern void PGXP_MatrixCopy(MATRIX* dst, const MATRIX* src);
+
 void RotTrans(SVECTOR* v0, VECTOR* v1, long* flag)
 {
 	gte_RotTrans(v0, v1, flag);
@@ -135,10 +161,34 @@ void RotTransSV(SVECTOR* v0, SVECTOR* v1, long* flag)
 	gte_stflg(flag);
 }
 
+/* PC port: raw per-vertex view-space SZ from the LAST RotTransPers/3/4, captured
+ * here (before the GS TMD drawers' NormalClip/NormalColorCol clobber the SZ FIFO)
+ * so the inventory item pass can feed each face's true unquantized depth into the
+ * GL depth test — the OTZ return (gte_stszotz) is perspective-divided + clamped and
+ * too coarse to separate a radio's antenna face from its body face. Read by
+ * ITEM_PRECISE_SZ in libgs_stub.c, gated on g_PcItemPreciseDepth (inventory only). */
+unsigned short g_PsyX_RtpSz[4] = { 0, 0, 0, 0 };
+
 int RotTransPers(SVECTOR* v0, int* sxy, long* p, long* flag)
 {
 	int sz;
 	gte_RotTransPers(v0, sxy, p, flag, &sz);
+
+	/* One RTPS: this vertex is the newest FIFO entry. (The quad drawers in
+	 * libgs_stub.c project v3 through here after a RotTransPers3 on v0..v2.) */
+	if (g_PsxUsePgxp)
+		PGXP_StoreAddr(sxy, 2);
+
+	/* Mirror the shifted SZ FIFO: after RTPT(v0..v2) + this RTPS(v3) the
+	 * slots hold v0..v3 in order, which is what the quad path of
+	 * ApplyGtePerVertexDepth expects. Without this the lit-quad drawers fed
+	 * [stale, v0, v1, v2] — v3's depth was never captured. The mirror is only
+	 * read under g_PcItemPreciseDepth at addPrim, so other callers see no
+	 * behavior change. */
+	g_PsyX_RtpSz[0] = (unsigned short)C2_SZ0;
+	g_PsyX_RtpSz[1] = (unsigned short)C2_SZ1;
+	g_PsyX_RtpSz[2] = (unsigned short)C2_SZ2;
+	g_PsyX_RtpSz[3] = (unsigned short)C2_SZ3;
 
 	return sz;
 }
@@ -147,6 +197,22 @@ int RotTransPers3(SVECTOR* v0, SVECTOR* v1, SVECTOR* v2, long* sxy0, long* sxy1,
 {
 	int sz;
 	gte_RotTransPers3(v0, v1, v2, sxy0, sxy1, sxy2, p, flag, &sz);
+
+	/* RTPT leaves v0..v2 in FIFO slots 0..2. Capture before the caller projects
+	 * anything else (the quad drawers follow up with RotTransPers on v3). */
+	if (g_PsxUsePgxp)
+	{
+		PGXP_StoreAddr(sxy0, 0);
+		PGXP_StoreAddr(sxy1, 1);
+		PGXP_StoreAddr(sxy2, 2);
+	}
+
+	/* Mirror the SZ FIFO 1:1 (SZ0=oldest/unused, SZ1..3 = v0..v2), matching the
+	 * indexing ApplyGtePerVertexDepth expects (triangle reads sz[1..3]). */
+	g_PsyX_RtpSz[0] = (unsigned short)C2_SZ0;
+	g_PsyX_RtpSz[1] = (unsigned short)C2_SZ1;
+	g_PsyX_RtpSz[2] = (unsigned short)C2_SZ2;
+	g_PsyX_RtpSz[3] = (unsigned short)C2_SZ3;
 
 	return sz;
 }
@@ -161,14 +227,34 @@ int RotTransPers4(SVECTOR* v0, SVECTOR* v1, SVECTOR* v2, SVECTOR* v3, long* sxy0
 
 	gte_stsxy3(sxy0, sxy1, sxy2);
 
+	/* Capture v0..v2 NOW: the RTPS below shifts the 3-deep FIFO by one, which
+	 * would drop v0 beyond recovery. */
+	if (g_PsxUsePgxp)
+	{
+		PGXP_StoreAddr(sxy0, 0);
+		PGXP_StoreAddr(sxy1, 1);
+		PGXP_StoreAddr(sxy2, 2);
+	}
+
 	gte_stflg(&_flag);
 
 	gte_ldv0(v3);
 	gte_rtps();
 
 	gte_stsxy(sxy3);
+
+	if (g_PsxUsePgxp)
+		PGXP_StoreAddr(sxy3, 2); /* the RTPS above made v3 the newest entry */
+
 	gte_stflg(flag);
 	gte_stdp(p);
+
+	/* FIFO now holds SZ0=v0, SZ1=v1, SZ2=v2, SZ3=v3 (rtps shifted the 4th in);
+	 * mirror it 1:1 for the quad path of ApplyGtePerVertexDepth (sz[0],sz[1],sz[3],sz[2]). */
+	g_PsyX_RtpSz[0] = (unsigned short)C2_SZ0;
+	g_PsyX_RtpSz[1] = (unsigned short)C2_SZ1;
+	g_PsyX_RtpSz[2] = (unsigned short)C2_SZ2;
+	g_PsyX_RtpSz[3] = (unsigned short)C2_SZ3;
 
 	*flag |= _flag;
 	gte_stszotz(&sz);
@@ -267,6 +353,26 @@ MATRIX* MulMatrix0(MATRIX* m0, MATRIX* m1, MATRIX* m2)
 	// correct Psy-Q implementation
 	SVECTOR v0, r0, r1, r2;
 
+	/* PGXP exact twin: compute the product in double from the operands' twins
+	 * before the Q12 integer multiply below truncates it. */
+	double exactOut[9];
+	int haveExact = 0;
+	if (g_PsxUsePgxp)
+	{
+		double exact0[9], exact1[9];
+		haveExact = PGXP_MatrixLookup(m0, exact0) && PGXP_MatrixLookup(m1, exact1);
+		if (haveExact)
+		{
+			int row, col;
+			for (row = 0; row < 3; ++row)
+				for (col = 0; col < 3; ++col)
+					exactOut[row * 3 + col] =
+						exact0[row * 3 + 0] * exact1[0 * 3 + col] +
+						exact0[row * 3 + 1] * exact1[1 * 3 + col] +
+						exact0[row * 3 + 2] * exact1[2 * 3 + col];
+		}
+	}
+
 	gte_SetRotMatrix(m0);
 
 	v0.vx = m1->m[0][0];
@@ -304,6 +410,14 @@ MATRIX* MulMatrix0(MATRIX* m0, MATRIX* m1, MATRIX* m2)
 	m2->m[2][0] = r0.vz;
 	m2->m[2][1] = r1.vz;
 	m2->m[2][2] = r2.vz;
+
+	if (g_PsxUsePgxp)
+	{
+		if (haveExact)
+			PGXP_MatrixRegister(m2, exactOut);
+		else
+			PGXP_MatrixInvalidate(m2);
+	}
 
 #else
 	/* ����ł�m0==m2�̎����o�C */
@@ -345,6 +459,8 @@ MATRIX* MulMatrix(MATRIX* m0, MATRIX* m1)
 	/* MulMatrix0 only computes the 3x3 rotation; tmp.t[] is uninitialized.
 	 * Copy only the rotation part to preserve m0's translation vector. */
 	memcpy(m0->m, tmp.m, sizeof(m0->m));
+	if (g_PsxUsePgxp)
+		PGXP_MatrixCopy(m0, &tmp);
 
 	return m0;
 }
@@ -358,6 +474,8 @@ MATRIX* MulMatrix2(MATRIX* m0, MATRIX* m1)
 	/* MulMatrix0 only computes the 3x3 rotation; tmp.t[] is uninitialized.
 	 * Copy only the rotation part to preserve m1's translation vector. */
 	memcpy(m1->m, tmp.m, sizeof(m1->m));
+	if (g_PsxUsePgxp)
+		PGXP_MatrixCopy(m1, &tmp);
 
 	return m1;
 }
@@ -366,6 +484,26 @@ MATRIX* MulRotMatrix(MATRIX* m0)
 {
 	// FIXME: might be wrong
 	// as RTV0 can be insufficient
+	double exact[9];
+	int haveExact = 0;
+	if (g_PsxUsePgxp)
+	{
+		double input[9], current[9];
+		haveExact = PGXP_MatrixLookup(m0, input) && PGXP_MatrixLookupCurrent(current);
+		if (haveExact)
+		{
+			/* This routine feeds each input row to the current GTE matrix as a
+			 * column vector: result = input * transpose(current). */
+			int row, col;
+			for (row = 0; row < 3; ++row)
+				for (col = 0; col < 3; ++col)
+					exact[row * 3 + col] =
+						input[row * 3 + 0] * current[col * 3 + 0] +
+						input[row * 3 + 1] * current[col * 3 + 1] +
+						input[row * 3 + 2] * current[col * 3 + 2];
+		}
+	}
+
 	gte_ldv0(&m0->m[0]);
 	gte_rtv0();
 	gte_stsv(&m0->m[0]);
@@ -377,6 +515,14 @@ MATRIX* MulRotMatrix(MATRIX* m0)
 	gte_ldv0(&m0->m[2]);
 	gte_rtv0();
 	gte_stsv(&m0->m[2]);
+
+	if (g_PsxUsePgxp)
+	{
+		if (haveExact)
+			PGXP_MatrixRegister(m0, exact);
+		else
+			PGXP_MatrixInvalidate(m0);
+	}
 
 	return m0;
 }
@@ -639,6 +785,10 @@ MATRIX* RotMatrix(SVECTOR* r, MATRIX* m)
 	m->m[0][2] = s1;
 	m->m[1][2] = -FIXED(c1 * s0);
 	m->m[2][2] = FIXED(c1 * c0);
+	/* CPU-built from fixed sin/cos: no unquantized source, so drop any older
+	 * exact twin at this address rather than let it leak. */
+	if (g_PsxUsePgxp)
+		PGXP_MatrixInvalidate(m);
 
 	return m;
 }
@@ -672,6 +822,8 @@ MATRIX* RotMatrixYXZ(SVECTOR* r, MATRIX* m)
 	m->m[2][1] = FIXED(s1 * s2) + FIXED(z0 * c2);
 	m->m[2][0] = FIXED(z0 * s2) - FIXED(s1 * c2);
 	m->m[2][2] = FIXED(c1 * c0);
+	if (g_PsxUsePgxp)
+		PGXP_MatrixInvalidate(m);
 
 	return m;
 }
@@ -694,6 +846,8 @@ MATRIX* RotMatrixX(int r, MATRIX* m)
 	t2 = m->m[2][2];
 	m->m[1][2] = FIXED(t1 * c0 - t2 * s0);
 	m->m[2][2] = FIXED(t1 * s0 + t2 * c0);
+	if (g_PsxUsePgxp)
+		PGXP_MatrixInvalidate(m);
 
 	return m;
 }
@@ -716,6 +870,8 @@ MATRIX* RotMatrixY(int r, MATRIX* m)
 	t2 = m->m[2][2];
 	m->m[0][2] = FIXED(t1 * c0 + t2 * s0);
 	m->m[2][2] = FIXED(-t1 * s0 + t2 * c0);
+	if (g_PsxUsePgxp)
+		PGXP_MatrixInvalidate(m);
 
 	return m;
 }
@@ -738,6 +894,8 @@ MATRIX* RotMatrixZ(int r, MATRIX* m)
 	t2 = m->m[1][2];
 	m->m[0][2] = FIXED(t1 * c0 - t2 * s0);
 	m->m[1][2] = FIXED(t1 * s0 + t2 * c0);
+	if (g_PsxUsePgxp)
+		PGXP_MatrixInvalidate(m);
 
 	return m;
 }
@@ -783,6 +941,10 @@ MATRIX* CompMatrix(MATRIX* m0, MATRIX* m1, MATRIX* m2)
 	m2->t[0] += m0->t[0];
 	m2->t[1] += m0->t[1];
 	m2->t[2] += m0->t[2];
+	/* Rotation provenance rides gte_MulMatrix0 above; the legacy translation
+	 * path truncates through SVECTOR, so reject any stale exact t. */
+	if (g_PsxUsePgxp)
+		PGXP_MatrixInvalidateTranslation(m2);
 
 	return m2;
 }
@@ -861,6 +1023,8 @@ MATRIX* CompMatrixLV(MATRIX* m0, MATRIX* m1, MATRIX* m2)
 	m2->t[0] = tmpHI.vx + tmpLO.vx + m0->t[0];
 	m2->t[1] = tmpHI.vy + tmpLO.vy + m0->t[1];
 	m2->t[2] = tmpHI.vz + tmpLO.vz + m0->t[2];
+	if (g_PsxUsePgxp)
+		PGXP_MatrixInvalidateTranslation(m2);
 
 	return m2;
 }
@@ -870,11 +1034,28 @@ MATRIX* TransMatrix(MATRIX* m, VECTOR* v)
 	m->t[0] = v->vx;
 	m->t[1] = v->vy;
 	m->t[2] = v->vz;
+	if (g_PsxUsePgxp)
+		PGXP_MatrixInvalidateTranslation(m);
 	return m;
 }
 
 MATRIX* ScaleMatrix(MATRIX* m, VECTOR* v)
 {
+	double exact[9];
+	int haveExact = 0;
+	if (g_PsxUsePgxp)
+	{
+		double input[9];
+		haveExact = PGXP_MatrixLookup(m, input);
+		if (haveExact)
+		{
+			const double scale[3] = { (double)v->vx / 4096.0, (double)v->vy / 4096.0, (double)v->vz / 4096.0 };
+			int row, col;
+			for (row = 0; row < 3; ++row)
+				for (col = 0; col < 3; ++col)
+					exact[row * 3 + col] = input[row * 3 + col] * scale[row];
+		}
+	}
 	m->m[0][0] = FIXED(m->m[0][0] * v->vx);
 	m->m[0][1] = FIXED(m->m[0][1] * v->vx);
 	m->m[0][2] = FIXED(m->m[0][2] * v->vx);
@@ -884,6 +1065,13 @@ MATRIX* ScaleMatrix(MATRIX* m, VECTOR* v)
 	m->m[2][0] = FIXED(m->m[2][0] * v->vz);
 	m->m[2][1] = FIXED(m->m[2][1] * v->vz);
 	m->m[2][2] = FIXED(m->m[2][2] * v->vz);
+	if (g_PsxUsePgxp)
+	{
+		if (haveExact)
+			PGXP_MatrixRegister(m, exact);
+		else
+			PGXP_MatrixInvalidate(m);
+	}
 	return m;
 }
 

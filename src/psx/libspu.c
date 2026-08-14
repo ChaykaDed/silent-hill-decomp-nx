@@ -1,6 +1,6 @@
 #define HAVE_M_PI
 #include "../PsyX_main.h"
-#include "../audio/PsyX_SPUAL.h"
+#include "../audio/PsyX_SPUAL_ext.h"
 #include "psx/libapi.h"
 #include "psx/libetc.h"
 
@@ -28,15 +28,8 @@ unsigned int SpuRead(unsigned char* addr, unsigned int size)
 
 int SpuSetTransferMode(int mode)
 {
-	// TODO: handle different transfer modes?
-
-	int mode_fix = mode == 0 ? 0 : 1;
-
-	//trans_mode = mode;
-	//transMode = mode_fix;
-	s_transferMode = mode_fix;
-
-	return mode_fix;
+	s_transferMode = PsyX_SPUAL_SetTransferMode(mode);
+	return s_transferMode;
 }
 
 unsigned int SpuSetTransferStartAddr(unsigned int addr)
@@ -151,18 +144,37 @@ int SpuGetReverb(void)
 
 int SpuSetReverbModeParam(SpuReverbAttr* attr)
 {
-	PSYX_UNIMPLEMENTED();
+	/* The game drives reverb through this constantly: per-track depths on BGM
+	 * bank loads, the per-tick depth RAMP on sequence (re)start (libsd
+	 * replay_reverb_set — the PSX "music fades in with its echo"), and the
+	 * boot-time mode set. Returns 0 = success (a nonzero return makes
+	 * SdUtSetReverbType report failure to the game). */
+	if (attr->mask & SPU_REV_MODE)
+		PsyX_SPUAL_SetReverbMode(attr->mode & 0xFF);
+
+	if (attr->mask & (SPU_REV_DEPTHL | SPU_REV_DEPTHR))
+		PsyX_SPUAL_SetReverbDepthMasked(
+			(attr->mask & SPU_REV_DEPTHL) != 0,
+			(attr->mask & SPU_REV_DEPTHR) != 0,
+			attr->depth.left, attr->depth.right);
+
 	return 0;
 }
 
 void SpuGetReverbModeParam(SpuReverbAttr* attr)
 {
-	PSYX_UNIMPLEMENTED();
+	if (!attr)
+		return;
+	PsyX_SPUAL_GetReverbModeParam(attr);
 }
 
 int SpuSetReverbDepth(SpuReverbAttr* attr)
 {
-	PSYX_UNIMPLEMENTED();
+	if (attr->mask & (SPU_REV_DEPTHL | SPU_REV_DEPTHR))
+		PsyX_SPUAL_SetReverbDepthMasked(
+			(attr->mask & SPU_REV_DEPTHL) != 0,
+			(attr->mask & SPU_REV_DEPTHR) != 0,
+			attr->depth.left, attr->depth.right);
 	return 0;
 }
 
@@ -189,13 +201,13 @@ unsigned int SpuGetReverbVoice(void)
 
 int SpuClearReverbWorkArea(int mode)
 {
-	PSYX_UNIMPLEMENTED();
-	return 0;
+	(void)mode;
+	return PsyX_SPUAL_ClearReverbWorkArea();
 }
 
 void SpuSetCommonAttr(SpuCommonAttr* attr)
 {
-	PSYX_UNIMPLEMENTED();
+	PsyX_SPUAL_SetCommonAttr(attr);
 }
 
 int SpuInitMalloc(int num, char* top)
@@ -210,8 +222,7 @@ int SpuMalloc(int size)
 
 int SpuMallocWithStartAddr(unsigned int addr, int size)
 {
-	PSYX_UNIMPLEMENTED();
-	return 0;
+	return PsyX_SPUAL_AllocAt(addr, size);
 }
 
 void SpuFree(unsigned int addr)
@@ -227,20 +238,25 @@ unsigned int SpuFlush(unsigned int ev)
 
 void SpuSetCommonMasterVolume(short mvol_left, short mvol_right)// (F)
 {
-	//MasterVolume.VolumeLeft.Raw = mvol_left;
-	//MasterVolume.VolumeRight.Raw = mvol_right;
-	PSYX_UNIMPLEMENTED();
+	SpuCommonAttr attr = {0};
+	attr.mask = SPU_COMMON_MVOLL | SPU_COMMON_MVOLR |
+	            SPU_COMMON_MVOLMODEL | SPU_COMMON_MVOLMODER;
+	attr.mvol.left = mvol_left;
+	attr.mvol.right = mvol_right;
+	attr.mvolmode.left = SPU_VOICE_DIRECT16;
+	attr.mvolmode.right = SPU_VOICE_DIRECT16;
+	PsyX_SPUAL_SetCommonAttr(&attr);
 }
 
 int SpuSetReverbModeType(int mode)
 {
-	PSYX_UNIMPLEMENTED();
+	PsyX_SPUAL_SetReverbMode(mode);
 	return 0;
 }
 
 void SpuSetReverbModeDepth(short depth_left, short depth_right)
 {
-	PSYX_UNIMPLEMENTED();
+	PsyX_SPUAL_SetReverbDepthMasked(1, 1, depth_left, depth_right);
 }
 
 void SpuGetVoiceVolume(int vNum, short* volL, short* volR)
@@ -366,15 +382,25 @@ SpuIRQCallbackProc SpuSetIRQCallback(SpuIRQCallbackProc x)
 
 void SpuSetCommonCDMix(int cd_mix)
 {
-	PSYX_UNIMPLEMENTED();
+	SpuCommonAttr attr = {0};
+	attr.mask = SPU_COMMON_CDMIX;
+	attr.cd.mix = cd_mix;
+	PsyX_SPUAL_SetCommonAttr(&attr);
 }
 
 void SpuSetCommonCDVolume(short cd_left, short cd_right)
 {
-	PSYX_UNIMPLEMENTED();
+	SpuCommonAttr attr = {0};
+	attr.mask = SPU_COMMON_CDVOLL | SPU_COMMON_CDVOLR;
+	attr.cd.volume.left = cd_left;
+	attr.cd.volume.right = cd_right;
+	PsyX_SPUAL_SetCommonAttr(&attr);
 }
 
 void SpuSetCommonCDReverb(int cd_reverb)
 {
-	PSYX_UNIMPLEMENTED();
+	SpuCommonAttr attr = {0};
+	attr.mask = SPU_COMMON_CDREV;
+	attr.cd.reverb = cd_reverb;
+	PsyX_SPUAL_SetCommonAttr(&attr);
 }

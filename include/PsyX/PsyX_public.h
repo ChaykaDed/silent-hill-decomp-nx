@@ -65,6 +65,8 @@ extern GameOnTextInputHandler		g_cfg_gameOnTextInput;
 extern int							g_cfg_swapInterval;
 extern int							g_cfg_pgxpZBuffer;
 extern int							g_cfg_bilinearFiltering;
+extern int							g_cfg_menuFilter;
+extern int							g_cfg_disableDpadMovement;
 extern int							g_cfg_affineTextures;
 extern int							g_cfg_psxDither;
 extern int							g_cfg_pgxpTextureCorrection;
@@ -73,6 +75,11 @@ extern int							g_cfg_pgxpTextureCorrection;
  * be set BEFORE PsyX_Initialise — it drives the SDL multisample GL attributes at
  * context-creation time. */
 extern int							g_cfg_msaaSamples;
+
+/* PC port: confine the mouse pointer to the game window while it holds focus
+ * (0 = never). Only ever applied in fullscreen/borderless — a windowed game
+ * that traps the pointer is hostile. Runtime-settable. */
+extern int							g_cfg_confineCursor;
 
 /* PC port: full-screen post-process look (0 = off, 1.. = a built-in filter).
  * Safe to change at runtime (launcher config + F2 in-game cycle). */
@@ -86,6 +93,37 @@ extern int							g_cfg_tonemap;
  * (launcher config + F4 in-game toggle). */
 extern int							g_PsyX_UsePerPixelFlashlight;
 
+/* PC port: real flashlight shadow mapping (depth pre-pass from the light POV;
+ * requires the per-pixel flashlight on). Runtime-settable (config + `shadows`
+ * console). Bias is the light-clip depth-compare epsilon (`shadowbias`). */
+extern int							g_PsyX_UseFlashlightShadows;
+extern float						g_PsyX_FlashlightShadowBias;
+/* Normal-offset amount (fraction of distance-to-light) that pushes the receiver
+ * off its surface toward the light before the shadow lookup — kills grazing-angle
+ * self-shadow acne on flat surfaces. Tunable via `shadownormal`. */
+extern float						g_PsyX_FlashlightShadowNormalOffset;
+/* How much light a fully-occluded pixel loses (1 = black, 0.5 = soft half-shadow).
+ * Keeps the close point light's oversized clutter umbras subtle. `shadowstrength`. */
+extern float						g_PsyX_FlashlightShadowStrength;
+/* Contact-shadow fade distance (view units): a receiver this far behind its
+ * occluder casts no shadow, so props drop tight contact shadows instead of tall
+ * silhouettes smeared onto far walls. `shadowfade`. */
+extern float						g_PsyX_FlashlightShadowFadeDist;
+/* First-person shadow light drop (view-space units) — offsets the shadow light
+ * below the eye so FPS shadows aren't self-cancelled by a camera-coincident light. */
+extern float						g_PsyX_FlashlightShadowFpsDrop;
+/* Set 1 by game code around a draw whose geometry should NOT cast a flashlight
+ * shadow (Harry's own body); reset to 0 after. Per-vertex, rides the view-space FIFO. */
+extern int							g_PsyX_NoShadowCast;
+
+/* Optional per-sound sample replacement. A voice plays from an SPU address; the
+ * host may answer that address with its own PCM (any length or rate) instead of
+ * the ADPCM resident there, which is how loose-file sound mods bypass both the
+ * bank container and its size ceiling. Returns non-zero on a hit. NULL by
+ * default, so PsyCross on its own behaves exactly as before. */
+typedef int (*PsyX_SfxOverrideFn)(int spuAddr, const short** outPcm, int* outSampleCount);
+extern PsyX_SfxOverrideFn			g_PsyX_SfxOverride;
+
 /* PC port: per-pixel flashlight cone parameters, pushed once per frame by game
  * code (bodyprog world-lighting setup). Position and direction are in VIEW
  * (camera) space — the same space as the per-vertex GrVertex.vsx/vsy/vsz the GTE
@@ -94,6 +132,7 @@ extern int							g_PsyX_UsePerPixelFlashlight;
  * until the game pushes a valid light for the frame. */
 extern int							g_PsyX_FlashlightActive;     /* 1 = push light this frame */
 extern float						g_PsyX_FlashlightPos[3];     /* view-space xyz */
+extern float						g_PsyX_FlashlightShadowPos[3]; /* view-space physical light pos for the shadow map (chest/hand); == FlashlightPos in TPS */
 extern float						g_PsyX_FlashlightDir[3];     /* view-space unit dir the cone points along */
 extern float						g_PsyX_FlashlightColor[3];   /* additive RGB at full strength */
 extern float						g_PsyX_FlashlightInnerCos;   /* cos(inner half-angle) */
@@ -135,6 +174,12 @@ extern int							g_PsxDitherSuppressed;
 extern GameDebugKeysHandlerFunc		g_dbg_gameDebugKeys;
 extern GameDebugMouseHandlerFunc	g_dbg_gameDebugMouse;
 
+/* PC port: map a window-pixel point to a [0,1] fraction of the letterboxed 4:3
+ * display viewport (the pillarbox rect the renderer installs). Returns 1 if the
+ * point is inside the viewport, 0 if it falls in the black bars. Used to convert
+ * an OS mouse position into the game's 2D coordinate space. */
+extern int							PsyX_MapWindowToViewport(int mx, int my, float* outFracX, float* outFracY);
+
 /* PC port: route PsyX logging into the host's stdio stream (pass NULL to
  * silence PsyX logging entirely). Call BEFORE PsyX_Initialise so PsyX never
  * creates its own "<appName>.log". PsyX will flush but never fclose an
@@ -168,6 +213,11 @@ extern int PsyX_LookupKeyboardMapping(const char* str, int default_value);
 /* Returns controller mapping index */
 extern int PsyX_LookupGameControllerMapping(const char* str, int default_value);
 
+/* Is a bind held on any attached physical controller? Takes a value encoded by
+ * PsyX_LookupGameControllerMapping, so it accepts axes (the triggers) as well as
+ * digital buttons — unlike PsyX_RawControllerButtonHeld, which is buttons only. */
+extern int PsyX_RawControllerBindHeld(int buttonOrAxis);
+
 /* Screen size of emulated PSX viewport with widescreen offsets */
 extern void PsyX_GetPSXWidescreenMappedViewport(struct _RECT16* rect);
 
@@ -179,6 +229,18 @@ extern void PsyX_EnableSwapInterval(int enable);
 
 /* Changes swap interval interval interval */
 extern void PsyX_SetSwapInterval(int interval);
+
+/* PC port: apply window mode + resolution at runtime.
+ * fullscreen: 0 = windowed, 1 = exclusive fullscreen, 2 = borderless desktop. */
+extern void PsyX_ApplyWindowState(int width, int height, int fullscreen);
+
+/* PC port: re-evaluate mouse confinement (see g_cfg_confineCursor). Idempotent;
+ * call after anything that changes window mode or focus. */
+extern void PsyX_UpdateMouseConfinement(void);
+
+/* PC port: apply vsync at runtime (0 = off, nonzero = on). Routes through the
+ * per-frame swap-interval path so the change persists. */
+extern void PsyX_ApplyVsync(int vsync);
 
 /* 1 while Cross (A) or Start is held on any connected game controller.
  * For blocking loops (FMV playback) that run outside the game's pad

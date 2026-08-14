@@ -423,12 +423,23 @@ void SetDrawStp(DR_STP* p, int pbw)
  * ([OT-SCAN] 5E89C during the map4_s03 boss). The PSX draw-offset value itself
  * must NOT be applied on PC — GR positions the framebuffer via the display
  * env, and applying the raw offset shifts everything off-screen. So emit a
- * well-formed, render-neutral prim: code[0] sub-type 0 makes ProcessDrawEnv
- * consume the declared length and advance correctly without touching ofs. */
+ * well-formed, render-neutral prim that consumes the declared length without
+ * touching ofs.
+ *
+ * The code BYTE (P_TAG offset 15 = high byte of code[0]) must have high nibble
+ * 0xE for ParsePrimitive to dispatch to ProcessDrawEnv (case 0xE0). code[0]=0
+ * gave code byte 0x00, which instead hit ParsePrimitive's `case 0x00` — that
+ * path hard-returns primLength=3, but the tag declares len=2, so the OT walker
+ * advanced 4 bytes too far and logged `ptag length is not valid (diff=-4)`
+ * every frame (17k lines flooding the map4_s04/map3_s02 Lisa/Alessa cutscenes,
+ * whose per-frame screen-feedback builders link two DR_OFFSETs each). Use
+ * 0xE0______ (GP0 NOP): high nibble 0xE reaches ProcessDrawEnv, sub-type 0 makes
+ * it `return len` immediately — consumes exactly the 2 declared longs and
+ * touches no draw state (ofs stays as the frame's main draw-env set it). */
 void SetDrawOffset(DR_OFFSET* p, u_short* ofs)
 {
 	(void)ofs;
-	p->code[0] = 0;
+	p->code[0] = 0xE0000000;
 	p->code[1] = 0;
 	setlen(p, 2);
 }
@@ -471,7 +482,11 @@ void DrawOTag(u_long* p)
 
 		ParsePrimitivesLinkedList(p, 0);
 
-		glFinish();
+		/* No glFinish here: the parse is CPU-side and the GL command stream is
+		 * ordered, so DrawAllSplits needs no completion barrier. The old
+		 * unconditional glFinish drained the pipeline 2-3x per frame (OT0 +
+		 * OT2 + water OT), serializing CPU against GPU — on 2012-era Intel
+		 * that alone pushed frames onto multi-vblank boundaries (~10fps). */
 
 		DrawAllSplits();
 	} while (g_dbg_emulatorPaused);

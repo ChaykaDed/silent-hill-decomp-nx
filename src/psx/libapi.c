@@ -16,6 +16,18 @@ int _mkdir(const char* dirname);
 #endif
 #include "../PsyX_main.h"
 
+/* This TU is compiled with -fvisibility=hidden on ELF so its libc-colliding
+ * names (open/read/write/close/lseek/ioctl/rename) don't interpose libc for
+ * other loaded modules (see PsyCross/CMakeLists.txt). SetSp is part of the PSX
+ * API that map overlay .so's call, and on Linux those overlays now import the
+ * single PsyCross instance from the host exe instead of linking their own copy,
+ * so SetSp must stay default-visibility to be exported via -rdynamic. */
+#if defined(__GNUC__) && !defined(_WIN32)
+#  define PSX_API_EXPORT __attribute__((visibility("default")))
+#else
+#  define PSX_API_EXPORT
+#endif
+
 long sp = 0;
 
 int dword_300[] = { 0x20, 0xD,  0x0,  0x0 };
@@ -461,7 +473,7 @@ void SwExitCriticalSection()
 	PSYX_UNIMPLEMENTED();
 }
 
-unsigned long SetSp(unsigned long newsp)//(F)
+PSX_API_EXPORT unsigned long SetSp(unsigned long newsp)//(F)
 {
 	unsigned long old_sp = sp;
 	sp = newsp;

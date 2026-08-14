@@ -220,10 +220,37 @@ extern void PsyX_ClearGteDepthTable(void);
  * system the polygon's true per-vertex GTE SZ values before addPrim, since
  * the GTE SZ FIFO is stale at addPrim time (transforms ran earlier in bulk). */
 extern void PsyX_SetNextPrimSz(unsigned short s0, unsigned short s1, unsigned short s2, unsigned short s3, int arg3);
+/* Like PsyX_SetNextPrimSz but stores the SZ UNQUANTIZED. For the 3D inventory
+ * item pass: the item is small, so its front/back faces differ by only ~1 SZ
+ * unit, which the 64-unit quantization in PsyX_SetNextPrimSz collapses into one
+ * depth (the see-through bug). */
+extern void PsyX_SetNextPrimSzExact(unsigned short s0, unsigned short s1, unsigned short s2, unsigned short s3);
+extern float PsyX_GetItemDepthSzMax(void);
+/* Contribute an SZ to the frame maximum WITHOUT arming a one-shot payload for
+ * the next addPrim. For a drawer that replaces a sort-time prim builder
+ * outright (the glTF modern mesh replaces GsSortObject4J) and so would
+ * otherwise leave the frame maximum it later divides by unfed. */
+extern void PsyX_NoteItemDepthSz(unsigned int sz);
+extern void PsyX_GetDrawEnvOffset(float* x, float* y);
+/* Drop an armed-but-unconsumed one-shot SZ payload. Gfx_MeshDraw arms per poly
+ * BEFORE its cull checks; a poly culled after arming would otherwise leak its
+ * payload (world FLAT kind + wrong SZ) to the next unrelated addPrim. Called at
+ * every Gfx_MeshDraw exit. */
+extern void PsyX_CancelNextPrimSz(void);
+/* Register the OT-bucket -> viewZ shift (shiftEff): world inserts at
+ * org[SZ >> (arg3+2)] (Gfx_MeshDraw), TMD actors at org[p >> shift] with
+ * p ~ SZ>>2 (GsSortObject4J). Lets the PGXP depth channel seed untracked
+ * OT buckets on the shared linear viewZ scale. No-op when <= 0. */
+extern void PsyX_SetOtViewZShift(int shiftEff);
 /* PGXP: force the next prim to render affine (no perspective correction).
  * For screen-space prims (billboards) whose corners are NOT GTE-projected, so
  * the shadow lookup has no real data for them. No-op when PGXP is off. */
 extern void PsyX_SetNextPrimAffine(void);
+/* PGXP: keep the next prim out of the per-pixel flashlight (renders as if the
+ * flashlight were Classic/off). For surfaces that carry a propagated view-space
+ * shadow but whose bright albedo would blow out under the beam (reflective sewer
+ * water). No-op when PGXP is off. */
+extern void PsyX_SetNextPrimNoFlashlight(void);
 /* PGXP: record addr->precise from the gte_stsxy* store macros. Internal. */
 extern void PGXP_StoreAddr(void* addr, int slot);
 /* PGXP shadow propagation: after a drawer copies a vertex word from a GTE scratch
@@ -729,6 +756,13 @@ typedef struct {
 } DR_PSYX_TEX;
 
 static_assert(sizeof(DR_PSYX_TEX) / 4 - P_LEN == 2, "DR_PSYX_TEX size must be 2 longs");
+
+typedef struct {
+	DECLARE_P_ADDR
+	u_int code[2]; /* subtype, registry handle; T7 depth remains address-keyed */
+} DR_PSYX_MODERN_MESH;
+
+static_assert(sizeof(DR_PSYX_MODERN_MESH) / 4 - P_LEN == 2, "DR_PSYX_MODERN_MESH size must be 2 longs");
 
 typedef struct {
 	DECLARE_P_ADDR
