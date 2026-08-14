@@ -1133,6 +1133,16 @@ void Pc_ConsoleExec(const char* line)
         extern float g_PsxWorldHScale;
         if (arg[0]) g_PsxWorldHScale = (float)atof(arg);
         cprintf("world horizontal scale: %.3f (1.0=off; >1 wider models, <1 narrower)", g_PsxWorldHScale);
+    } else if (strcmp(cmd, "WSZOOM") == 0) {
+        /* Hor+ zoom (widescreen_zoom config): >1 zooms the world in uniformly —
+         * bigger character, crops the beyond-map void at the edges. */
+        extern float g_PcWidescreenZoom;
+        if (arg[0]) {
+            float v = (float)atof(arg);
+            if (v < 0.5f || v > 2.0f) v = 1.0f;
+            g_PcWidescreenZoom = v;
+        }
+        cprintf("widescreen zoom: %.2f (1.0=stock Hor+; >1 zooms in, crops void)", g_PcWidescreenZoom);
     } else if (strcmp(cmd, "VSHIFT") == 0) {
         extern float g_PsxWorldVShift;
         if (arg[0]) g_PsxWorldVShift = (float)atof(arg);
