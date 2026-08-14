@@ -1319,7 +1319,9 @@ int main(int argc, char* argv[])
     /* Discord Rich Presence: opens the Discord IPC pipe lazily on the first
      * per-frame update (Pc_Discord_Update, pumped from DbgOverlay_Render), so
      * this only captures the session-start time + resolves the app id. */
+#if !defined(__SWITCH__)
     Pc_Discord_Init();
+#endif
 
     /* RetroAchievements: logs in with the launcher-stored token, hashes the
      * disc the port is actually running, and requests that game's set. Inert
@@ -1346,7 +1348,9 @@ int main(int argc, char* argv[])
     /* Cleanup */
     SH_DBG("[SH] MainLoop exited normally. Shutting down...");
     { extern void Pc_Ra_Shutdown(void); Pc_Ra_Shutdown(); }
+#if !defined(__SWITCH__)
     Pc_Discord_Shutdown();
+#endif
     PsyX_Shutdown();
 
     return 0;

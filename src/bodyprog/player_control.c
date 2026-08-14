@@ -10528,7 +10528,7 @@ void Player_CombatUpdate(s_SubCharacter* player, GsCOORDINATE2* coord) // 0x8007
                 extern VECTOR3 g_TpsCamFwd;
                 extern s32     g_TpsCamPitch;
                 s_RayTrace _tr;
-                VECTOR3    _off, _P;
+                VECTOR3    _off, _aimPt;
                 VECTOR3*   _hand = &playerCombat.attackPosition;
                 s32        _pitch;
                 #define SH_AIM_RANGE Q12(60.0f)
@@ -10538,7 +10538,7 @@ void Player_CombatUpdate(s_SubCharacter* player, GsCOORDINATE2* coord) // 0x8007
                 #undef SH_AIM_RANGE
                 if (Ray_CharaTraceQuery(&_tr, &g_TpsCamPos, &_off, player))
                 {
-                    _P = _tr.target;
+                    _aimPt = _tr.target;
                 }
                 else
                 {
@@ -10557,7 +10557,7 @@ void Player_CombatUpdate(s_SubCharacter* player, GsCOORDINATE2* coord) // 0x8007
                     _end.vy = g_TpsCamPos.vy + _off.vy;
                     _end.vz = g_TpsCamPos.vz + _off.vz;
                     Ray_TraceQuery(&_wtr, &g_TpsCamPos, &_end);
-                    _P = _wtr.target;
+                    _aimPt = _wtr.target;
                 }
                 /* Aim assist: if the reticle is over (mouse) or near (controller
                  * auto-aim) an enemy's body, redirect the aim point onto the
@@ -10571,12 +10571,12 @@ void Player_CombatUpdate(s_SubCharacter* player, GsCOORDINATE2* coord) // 0x8007
                     VECTOR3 _aim;
                     if (Pc_AimAssistFind(&g_TpsCamPos, &g_TpsCamFwd, Q12(60.0f), &_aim) != NO_VALUE)
                     {
-                        _P = _aim;
+                        _aimPt = _aim;
                     }
                 }
                 /* Yaw: heading from the hand to the aim point (matches the engine's
                  * ratan2(dx,dz) heading convention used just above). */
-                unkRot.vx = ratan2(_P.vx - _hand->vx, _P.vz - _hand->vz);
+                unkRot.vx = ratan2(_aimPt.vx - _hand->vx, _aimPt.vz - _hand->vz);
                 /* Pitch: aim from the HAND to the camera-ray hit point P so the
                  * bullet (and muzzle particle) actually go THROUGH the reticle. The
                  * camera sits above/behind the hand, so using the camera's own pitch
@@ -10586,9 +10586,9 @@ void Player_CombatUpdate(s_SubCharacter* player, GsCOORDINATE2* coord) // 0x8007
                  * rotates the arms, only the torso leans. Convention: 90 = level,
                  * <90 = down, >90 = up; horiz>0 keeps ratan2 in the 0..180 range. */
                 {
-                    s32 _dx6   = (_P.vx - _hand->vx) >> 6;
-                    s32 _dz6   = (_P.vz - _hand->vz) >> 6;
-                    s32 _dy6   = (_P.vy - _hand->vy) >> 6;
+                    s32 _dx6   = (_aimPt.vx - _hand->vx) >> 6;
+                    s32 _dz6   = (_aimPt.vz - _hand->vz) >> 6;
+                    s32 _dy6   = (_aimPt.vy - _hand->vy) >> 6;
                     s32 _horiz = SquareRoot0((u32)(SQUARE(_dx6) + SQUARE(_dz6)));
                     _pitch = (_horiz != 0 || _dy6 != 0) ? ratan2(_horiz, _dy6)
                                                         : Q12_ANGLE(90.0f);

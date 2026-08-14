@@ -205,6 +205,12 @@ list(FILTER PC_PORT_SOURCES EXCLUDE REGEX "combat_target\\.c$")
 if(SH_SWITCH)
     list(FILTER PC_PORT_SOURCES EXCLUDE REGEX "dll_loader\\.c$")
     list(FILTER PC_PORT_SOURCES EXCLUDE REGEX "map_overlay_loader\\.c$")
+    # Discord IPC needs sys/socket.h (or win32 named pipes); pc_ra_http.c needs
+    # dlfcn.h + winhttp/curl. Both features are desktop-only — the RA client
+    # falls back to its built-in no-op stubs (SH_RETROACHIEVEMENTS undefined).
+    list(FILTER PC_PORT_SOURCES EXCLUDE REGEX "pc_discord_ipc\\.c$")
+    list(FILTER PC_PORT_SOURCES EXCLUDE REGEX "pc_discord\\.c$")
+    list(FILTER PC_PORT_SOURCES EXCLUDE REGEX "pc_ra_http\\.c$")
 endif()
 
 # Windows: compile the .rc so the exe carries an application icon (Explorer,
@@ -391,7 +397,9 @@ target_link_libraries(${EXECUTABLE_NAME} PRIVATE
 
 # RetroAchievements: the runtime plus the platform HTTP backend it posts through
 # (WinHTTP ships with Windows; libcurl is the Linux/macOS standard).
-if(SH_HAVE_RETROACHIEVEMENTS)
+# Switch: no HTTP backend (pc_ra_http.c excluded above), so the client compiles
+# against its built-in no-op stubs and RA stays inert.
+if(SH_HAVE_RETROACHIEVEMENTS AND NOT SH_SWITCH)
     target_link_libraries(SilentHillPC PRIVATE rcheevos_static)
     target_compile_definitions(SilentHillPC PRIVATE SH_RETROACHIEVEMENTS=1)
     if(WIN32)

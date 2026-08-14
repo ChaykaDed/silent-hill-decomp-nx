@@ -386,7 +386,11 @@ void Pc_CharaGlobal_Open(void)
 
     /* Own handle, never closed: MapOverlay_Load's single-slot handle would
      * FreeLibrary it on the next transition, killing live fn ptrs. */
-#if defined(_WIN32)
+#if defined(__SWITCH__)
+    /* No dynamic loading on Switch — the global chara pool overlay is a
+     * desktop DLL feature; native per-map AI variants are always used. */
+    dll = NULL;
+#elif defined(_WIN32)
     dll = DllLoader_Open("maps/chara_global.dll");
 #elif defined(__APPLE__)
     dll = DllLoader_Open("maps/chara_global.dylib");

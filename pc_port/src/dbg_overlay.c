@@ -1911,7 +1911,9 @@ void DbgOverlay_Render(void)
     /* Discord Rich Presence tick: this hook runs once per EndScene, so it's the
      * port's reliable per-frame heartbeat. Self-gated (no-op unless enabled +
      * an app id is set); does no drawing. */
+#if !defined(__SWITCH__)
     { extern void Pc_Discord_Update(void); Pc_Discord_Update(); }
+#endif
 
     /* Achievement unlock popup: fully self-contained GL (own program, VAO and
      * textures, with its own state save/restore), so it lives here rather than

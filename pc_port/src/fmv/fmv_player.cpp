@@ -1340,7 +1340,7 @@ static int PlayAviPath(const char* filepath, int max_frames)
              frame_entry.type == ReadAVI::ctype_uncompressed_video_frame))
         {
             int real_w, real_h;
-            if (UnpackJPEG(frame_entry.buf, frame_size, s_decodeBuffer, &real_w, &real_h) == 0)
+            if (UnpackJPEG(frame_entry.buf, (unsigned)frame_size, &real_w, &real_h) == 0)
             {
                 DrawVideoFrame(real_w, real_h);
             }
