@@ -480,6 +480,10 @@ static void RestoreGLState(const FmvGLState* s)
  * a per-frame glTexImage2D realloc stalls some drivers hard at 4K. */
 static int s_fmvTexW = 0, s_fmvTexH = 0, s_fmvTexRgba = -1;
 
+/* Cover mode (fill the window, crop the overflow) for the PS1 boot splash —
+ * a 4:3 video on a 16:9 screen letterboxed into bars looks dead. */
+static int s_fmvCoverMode = 0;
+
 static void DrawVideoFrameEx(const unsigned char* pixels, int image_w, int image_h, int rgba)
 {
     int windowWidth, windowHeight;
@@ -504,16 +508,34 @@ static void DrawVideoFrameEx(const unsigned char* pixels, int image_w, int image
     float window_aspect = (float)windowWidth / (float)windowHeight;
 
     float scaleX, scaleY;
-    if (video_aspect > window_aspect) {
+    float u0 = 0.0f, v0 = 0.0f, u1 = 1.0f, v1 = 1.0f;
+    if (s_fmvCoverMode) {
+        /* Cover: fill the window, crop the overflow around the center. The
+         * PS1 boot splash is centered, so its logo survives the top/bottom
+         * crop on a 16:9 screen. */
         scaleX = 1.0f;
-        scaleY = window_aspect / video_aspect;
-    } else {
-        scaleX = video_aspect / window_aspect;
         scaleY = 1.0f;
+        if (video_aspect > window_aspect) {
+            float crop = (video_aspect / window_aspect - 1.0f) * 0.5f;
+            u0 = crop;
+            u1 = 1.0f - crop;
+        } else {
+            float crop = (window_aspect / video_aspect - 1.0f) * 0.5f;
+            v0 = crop;
+            v1 = 1.0f - crop;
+        }
+    } else {
+        /* Fit: letterbox the whole frame. */
+        if (video_aspect > window_aspect) {
+            scaleX = 1.0f;
+            scaleY = window_aspect / video_aspect;
+        } else {
+            scaleX = video_aspect / window_aspect;
+            scaleY = 1.0f;
+        }
     }
 
     /* pos.x, pos.y, uv.x, uv.y */
-    float u0 = 0.0f, v0 = 0.0f, u1 = 1.0f, v1 = 1.0f;
     float quad[] = {
         -scaleX,  scaleY,   u0, v0,
          scaleX,  scaleY,   u1, v0,
@@ -1387,6 +1409,7 @@ done:
 extern "C" int FMV_PlayAviFile(const char* path, int max_frames)
 {
     printf("[FMV] FMV_PlayAviFile(%s, %d)\n", path, max_frames);
+    s_fmvCoverMode = (path && strstr(path, "PS1_INTRO") != NULL) ? 1 : 0;
     return PlayAviPath(path, max_frames);
 }
 
