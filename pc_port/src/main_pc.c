@@ -868,6 +868,14 @@ int main(int argc, char* argv[])
     }
     int windowWidth = g_PcConfig.windowWidth;
     int windowHeight = g_PcConfig.windowHeight;
+#if defined(__SWITCH__)
+    /* The Switch renders to a 16:9 720p display. A 4:3 window would be
+     * stretched by the display pipeline, and the port's own aspect logic
+     * (Hor+ 3D world, pillarboxed 2D screens, letterboxed FMVs) only kicks
+     * in when the window is wider than 4:3. */
+    windowWidth  = 1280;
+    windowHeight = 720;
+#endif
 
     SH_LOG("Game data path: %s", g_GameDataPath);
 
