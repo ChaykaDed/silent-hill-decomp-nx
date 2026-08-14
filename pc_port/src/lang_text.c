@@ -123,6 +123,43 @@ int Pc_FanTextActive(void)
     return s_FanTextActive;
 }
 
+/* Team-Raccoon-style fan discs (Russian translation) encode their text in a
+ * custom byte set that reuses the ASCII slots: '^' = в, '*' = б, 'Z' = ё,
+ * '3' = З, 'H' = е, '[' = bracket, etc. Those bytes are essentially never
+ * used by an ASCII fan patch (Spanish fandub etc.), so their presence in the
+ * adopted item text identifies the disc reliably. The menu translations
+ * (lang_menu.c) switch to the TR byte column only for such discs. */
+static int s_FanTrText;
+
+int Pc_FanTrText(void)
+{
+    return s_FanTrText;
+}
+
+static void FanTrScanText(void)
+{
+    int i;
+
+    s_FanTrText = 0;
+    for (i = 0; i < ITEM_TEXT_COUNT && !s_FanTrText; i++)
+    {
+        const char* p = s_ItemNames[i];
+
+        if (p == NULL)
+            continue;
+        for (; *p != '\0'; p++)
+        {
+            unsigned char c = (unsigned char)*p;
+
+            if (c == 0x5E || c == 0x2A || c == 0x5A) /* в / б / ё slots */
+            {
+                s_FanTrText = 1;
+                break;
+            }
+        }
+    }
+}
+
 /* Read a whole file out of the raw-sector disc image. Caller frees. */
 static unsigned char* ReadDiscFile(unsigned int sector, unsigned int size)
 {
@@ -408,6 +445,7 @@ static void FanTextInit(void)
         if (r == 1)
         {
             s_FanTextActive = 1;
+            FanTrScanText();
             SH_LOG("[FANPATCH] rebuilt-disc item text adopted (base 0x%08X, name off 0x%X)", brBase, brNameOff);
         }
         else if (r < 0)
@@ -450,6 +488,7 @@ static void FanTextInit(void)
     {
         case 1:
             s_FanTextActive = 1;
+            FanTrScanText();
             SH_LOG("[FANPATCH] modified item text adopted from disc");
             break;
         case -1:

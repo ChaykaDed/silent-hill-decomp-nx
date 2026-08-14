@@ -31,6 +31,11 @@ int Pc_LangActive(void);
  * the `language` config key. */
 int Pc_FanTextActive(void);
 
+/* Non-zero when the active fan disc's adopted item text uses the
+ * Team-Raccoon-style custom byte encoding (Russian translation): the menu
+ * translations then switch to the TR byte column (lang_menu.c). */
+int Pc_FanTrText(void);
+
 /* Non-zero when the options menu should show the Language row (EUR disc +
  * menu entered from the title screen). */
 int Pc_LangMenuRowActive(void);
