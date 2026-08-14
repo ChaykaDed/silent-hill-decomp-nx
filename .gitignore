@@ -50,6 +50,9 @@ pc_port/launcher/**/bin/
 # Switch build artifacts
 pc_port/build_switch/
 
+# Windows gcc redirects stray output to NUL.obj in the working dir
+NUL.obj
+
 # Debug/backup scripts (local experiments, not part of the port)
 pc_port/*.bak
 pc_port/*_fixed.sh
