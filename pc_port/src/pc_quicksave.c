@@ -13,7 +13,11 @@
 #include "pc_config.h"
 #include "pc_rando.h"
 
+#if defined(__SWITCH__)
+#include <SDL2/SDL.h>
+#else
 #include <SDL.h>
+#endif
 
 /* A boss fight is the one place a quick save can strand a run: the save records
  * the player mid-arena, and reloading it drops them back into a fight they may

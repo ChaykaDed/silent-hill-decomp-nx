@@ -26,7 +26,11 @@
 #include <psx/libetc.h>
 
 #include <jpeglib.h>
+#if defined(__SWITCH__)
+#include <SDL2/SDL.h>
+#else
 #include <SDL.h>
+#endif
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -37,12 +41,142 @@ extern "C" const char* PcPort_GetGameDataPath(void);
 extern "C" const char* PcPort_GetGameDiscPath(void);
 extern "C" unsigned int PcPort_FileTableStartSector(int fileIdx);
 
+/* Switch debug output via svcOutputDebugString — shows up in Ryujinx log. */
+#if defined(__SWITCH__)
+extern "C" void svcOutputDebugString(const char* str, size_t len);
+static void fmv_dbg(const char* fmt, ...) {
+    char buf[256];
+    va_list ap; va_start(ap, fmt);
+    int n = vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    if (n > 0) svcOutputDebugString(buf, (size_t)(n < (int)sizeof(buf) ? n : sizeof(buf)-1));
+}
+
+/* audout-based audio for FMV (bypasses SDL device limit). */
+#include <malloc.h>
+struct AudioOutBuffer {
+    struct AudioOutBuffer* next;
+    void* buffer;
+    uint64_t buffer_size;
+    uint64_t data_size;
+    uint64_t data_offset;
+};
+
+#define FMV_AUDOUT_NUM_BUFS 4
+#define FMV_AUDOUT_BUF_SAMPLES 4800  /* 100ms at 48kHz stereo */
+
+extern "C" {
+uint32_t audoutInitialize(void);
+void audoutExit(void);
+uint32_t audoutOpenAudioOut(const char*, char*, uint32_t, uint32_t, uint32_t*, uint32_t*, int*, int*);
+uint32_t audoutStartAudioOut(void);
+uint32_t audoutStopAudioOut(void);
+uint32_t audoutAppendAudioOutBuffer(struct AudioOutBuffer*);
+uint32_t audoutWaitPlayFinish(struct AudioOutBuffer**, uint32_t*, uint64_t);
+}
+#define R_FAILED(r) ((r) & 0x80000000)
+
+static int s_audoutOk = 0;
+static struct AudioOutBuffer s_audoutBufs[FMV_AUDOUT_NUM_BUFS];
+static int s_audoutWriteIdx = 0;
+static float s_audoutResamplePos = 0.0f;
+static float s_audoutResampleStep = 1.0f;
+
+static int fmv_audout_init(int srcRate) {
+    if (s_audoutOk) return 1;
+    uint32_t r = audoutInitialize();
+    if (R_FAILED(r)) {
+        fmv_dbg("[FMV] audoutInitialize failed: 0x%X\n", r);
+        return 0;
+    }
+    uint32_t sampleRateOut, channelCountOut;
+    int fmtOut, stateOut;
+    r = audoutOpenAudioOut("default", NULL, 48000, 2,
+                            &sampleRateOut, &channelCountOut,
+                            &fmtOut, &stateOut);
+    if (R_FAILED(r)) {
+        fmv_dbg("[FMV] audoutOpenAudioOut failed: 0x%X\n", r);
+        audoutExit();
+        return 0;
+    }
+    fmv_dbg("[FMV] audout: %uHz %uch fmt=%d state=%d\n",
+            sampleRateOut, channelCountOut, fmtOut, stateOut);
+    for (int i = 0; i < FMV_AUDOUT_NUM_BUFS; i++) {
+        s_audoutBufs[i].buffer = memalign(0x1000, FMV_AUDOUT_BUF_SAMPLES * 4);
+        s_audoutBufs[i].buffer_size = FMV_AUDOUT_BUF_SAMPLES * 4;
+        s_audoutBufs[i].data_size = 0;
+        s_audoutBufs[i].data_offset = 0;
+    }
+    r = audoutStartAudioOut();
+    if (R_FAILED(r)) {
+        fmv_dbg("[FMV] audoutStartAudioOut failed: 0x%X\n", r);
+        for (int i = 0; i < FMV_AUDOUT_NUM_BUFS; i++) free(s_audoutBufs[i].buffer);
+        audoutExit();
+        return 0;
+    }
+    s_audoutResampleStep = (float)srcRate / 48000.0f;
+    s_audoutOk = 1;
+    fmv_dbg("[FMV] audout started (resample %d -> 48000, step=%.3f)\n",
+            srcRate, s_audoutResampleStep);
+    return 1;
+}
+
+static void fmv_audout_write(const int16_t* pcm, int nSamples) {
+    if (!s_audoutOk) return;
+    /* Linear interpolation resampling from input rate to 48000 Hz.
+     * s_audoutResamplePos tracks fractional position within the input. */
+    static int16_t outBuf[FMV_AUDOUT_BUF_SAMPLES * 2];
+    int outPos = 0;
+    float endPos = s_audoutResamplePos + (float)nSamples;
+    while (outPos < FMV_AUDOUT_BUF_SAMPLES * 2) {
+        int i = (int)s_audoutResamplePos;
+        if (i >= nSamples - 1) break;
+        float frac = s_audoutResamplePos - (float)i;
+        int l = (int)(pcm[i*2]   * (1.0f - frac) + pcm[(i+1)*2]   * frac);
+        int r = (int)(pcm[i*2+1] * (1.0f - frac) + pcm[(i+1)*2+1] * frac);
+        outBuf[outPos++] = (int16_t)(l > 32767 ? 32767 : (l < -32768 ? -32768 : l));
+        outBuf[outPos++] = (int16_t)(r > 32767 ? 32767 : (r < -32768 ? -32768 : r));
+        s_audoutResamplePos += s_audoutResampleStep;
+    }
+    s_audoutResamplePos = endPos - (float)nSamples;
+    if (outPos == 0) return;
+    struct AudioOutBuffer* buf = &s_audoutBufs[s_audoutWriteIdx];
+    s_audoutWriteIdx = (s_audoutWriteIdx + 1) % FMV_AUDOUT_NUM_BUFS;
+    int bytes = outPos * (int)sizeof(int16_t);
+    if ((uint64_t)bytes > buf->buffer_size) bytes = (int)buf->buffer_size;
+    memcpy(buf->buffer, outBuf, (size_t)bytes);
+    buf->data_size = (uint64_t)bytes;
+    struct AudioOutBuffer* released = NULL;
+    uint32_t releasedCount = 0;
+    audoutWaitPlayFinish(&released, &releasedCount, 0);
+    audoutAppendAudioOutBuffer(buf);
+}
+
+static void fmv_audout_exit(void) {
+    if (!s_audoutOk) return;
+    audoutStopAudioOut();
+    for (int i = 0; i < FMV_AUDOUT_NUM_BUFS; i++) {
+        if (s_audoutBufs[i].buffer) free(s_audoutBufs[i].buffer);
+    }
+    audoutExit();
+    s_audoutOk = 0;
+}
+#else
+static void fmv_audout_init(int srcRate) { (void)srcRate; }
+static void fmv_audout_write(const int16_t* pcm, int nSamples) { (void)pcm; (void)nSamples; }
+static void fmv_audout_exit(void) {}
+static void fmv_dbg(const char* fmt, ...) { (void)fmt; }
+#endif
+
 /* FMV diagnostics need to survive the brief tick=23 MovieIntro state — if
  * the game exits before the next stdout flush, plain printf output never
  * hits the log file. Redirect every [FMV] line through SH_DBG (which
  * writes to the line-buffered, exception-handler-flushed g_ShDebugLog). */
 #undef printf
-#define printf(...) SH_DBG_PRINTF_TRAILING_NEWLINE(__VA_ARGS__)
+#define printf(...) do { \
+    SH_DBG_PRINTF_TRAILING_NEWLINE(__VA_ARGS__); \
+    fmv_dbg(__VA_ARGS__); \
+} while (0)
 static inline void SH_DBG_PRINTF_TRAILING_NEWLINE(const char* fmt, ...) {
     if (!g_ShDebugLog) return;
     va_list ap; va_start(ap, fmt);
@@ -104,6 +238,7 @@ static const FmvFileEntry s_fmvFiles[] = {
     { "Z4_01590", 0x38940,  1590 },  /* 27 */
     { "ZC_14392", 0x38f76, 14392 },  /* 28 */
     { "ZZ_14239", 0x3c7ae, 14239 },  /* 29 */
+    { "PS1_INTRO", 0, 0 },           /* 30 - custom PS1 boot splash (AVI-only) */
 };
 
 #define FMV_FILE_COUNT (sizeof(s_fmvFiles) / sizeof(s_fmvFiles[0]))
@@ -218,7 +353,11 @@ static GLuint s_fmvVBO = 0;
 static GLuint s_fmvProgram = 0;
 
 static const char* s_fmvVertSrc =
+#if defined(__SWITCH__)
+    "#version 300 es\n"
+#else
     "#version 140\n"
+#endif
     "in vec2 a_pos;\n"
     "in vec2 a_uv;\n"
     "out vec2 v_uv;\n"
@@ -228,7 +367,11 @@ static const char* s_fmvVertSrc =
     "}\n";
 
 static const char* s_fmvFragSrc =
+#if defined(__SWITCH__)
+    "#version 300 es\n"
+#else
     "#version 140\n"
+#endif
     "precision highp float;\n"
     "in vec2 v_uv;\n"
     "out vec4 fragColor;\n"
@@ -245,10 +388,28 @@ static void InitBlitResources(void)
     GLuint vs = glCreateShader(GL_VERTEX_SHADER);
     glShaderSource(vs, 1, &s_fmvVertSrc, NULL);
     glCompileShader(vs);
+    {
+        GLint ok = 0;
+        glGetShaderiv(vs, GL_COMPILE_STATUS, &ok);
+        if (!ok) {
+            char log[512];
+            glGetShaderInfoLog(vs, sizeof(log), NULL, log);
+            printf("[FMV] Vertex shader compile error: %s\n", log);
+        }
+    }
 
     GLuint fs = glCreateShader(GL_FRAGMENT_SHADER);
     glShaderSource(fs, 1, &s_fmvFragSrc, NULL);
     glCompileShader(fs);
+    {
+        GLint ok = 0;
+        glGetShaderiv(fs, GL_COMPILE_STATUS, &ok);
+        if (!ok) {
+            char log[512];
+            glGetShaderInfoLog(fs, sizeof(log), NULL, log);
+            printf("[FMV] Fragment shader compile error: %s\n", log);
+        }
+    }
 
     s_fmvProgram = glCreateProgram();
     glAttachShader(s_fmvProgram, vs);
@@ -256,6 +417,15 @@ static void InitBlitResources(void)
     glBindAttribLocation(s_fmvProgram, 0, "a_pos");
     glBindAttribLocation(s_fmvProgram, 1, "a_uv");
     glLinkProgram(s_fmvProgram);
+    {
+        GLint ok = 0;
+        glGetProgramiv(s_fmvProgram, GL_LINK_STATUS, &ok);
+        if (!ok) {
+            char log[512];
+            glGetProgramInfoLog(s_fmvProgram, sizeof(log), NULL, log);
+            printf("[FMV] Program link error: %s\n", log);
+        }
+    }
 
     glDeleteShader(vs);
     glDeleteShader(fs);
@@ -343,11 +513,12 @@ static void DrawVideoFrameEx(const unsigned char* pixels, int image_w, int image
     }
 
     /* pos.x, pos.y, uv.x, uv.y */
+    float u0 = 0.0f, v0 = 0.0f, u1 = 1.0f, v1 = 1.0f;
     float quad[] = {
-        -scaleX,  scaleY,   0.0f, 0.0f,
-         scaleX,  scaleY,   1.0f, 0.0f,
-        -scaleX, -scaleY,   0.0f, 1.0f,
-         scaleX, -scaleY,   1.0f, 1.0f,
+        -scaleX,  scaleY,   u0, v0,
+         scaleX,  scaleY,   u1, v0,
+        -scaleX, -scaleY,   u0, v1,
+         scaleX, -scaleY,   u1, v1,
     };
 
     FmvGLState saved;
@@ -669,6 +840,9 @@ extern "C" void FMV_Shutdown(void)
         glDeleteProgram(s_fmvProgram);
         s_fmvProgram = 0;
     }
+#if defined(__SWITCH__)
+    fmv_audout_exit();
+#endif
 }
 
 /* ===== XA-ADPCM decoder for FMV audio =====
@@ -835,16 +1009,25 @@ static void FmvAudio_OnSector(const uint8_t* sector, void* user)
     FmvAudioState* st = (FmvAudioState*)user;
 
     if (!st->isOpen) {
+        printf("[FMV] First audio sector received\n");
+
         uint8_t coding     = sector[3];
         int     isStereo   = coding & 1;
         int     srCode     = (coding >> 2) & 3;
         int     sampleRate = (srCode == 0) ? 37800 : 18900;
+
+#if defined(__SWITCH__)
+        fmv_audout_init(sampleRate);
+#else
+        const char* drv = SDL_GetCurrentAudioDriver();
+        printf("[FMV] SDL audio driver: %s\n", drv ? drv : "(null)");
 
         if (!(SDL_WasInit(SDL_INIT_AUDIO) & SDL_INIT_AUDIO)) {
             if (SDL_InitSubSystem(SDL_INIT_AUDIO) < 0) {
                 printf("[FMV] SDL audio init failed: %s\n", SDL_GetError());
                 return;
             }
+            printf("[FMV] SDL_INIT_AUDIO done\n");
         }
 
         SDL_AudioSpec want, got;
@@ -854,26 +1037,31 @@ static void FmvAudio_OnSector(const uint8_t* sector, void* user)
         want.channels = (Uint8)(isStereo ? 2 : 1);
         want.samples  = 4096;
 
-        st->dev = SDL_OpenAudioDevice(NULL, 0, &want, &got, 0);
+        st->dev = SDL_OpenAudioDevice(NULL, 0, &want, &got,
+                                       SDL_AUDIO_ALLOW_ANY_CHANGE);
         if (st->dev == 0) {
             printf("[FMV] SDL_OpenAudioDevice failed: %s\n", SDL_GetError());
             return;
         }
-        st->sampleRate = got.freq;
-        st->isStereo   = (got.channels == 2);
-        st->isOpen     = 1;
         SDL_PauseAudioDevice(st->dev, 0);
-        printf("[FMV] XA audio opened: %d Hz %s (coding=0x%02X)\n",
-               sampleRate, isStereo ? "stereo" : "mono", coding);
+        printf("[FMV] XA audio opened: requested=%dHz got=%dHz %s chan=%d\n",
+               sampleRate, got.freq, isStereo ? "stereo" : "mono",
+               (int)got.channels);
+#endif
+        st->sampleRate = sampleRate;
+        st->isStereo   = isStereo;
+        st->isOpen     = 1;
     }
-
-    if (st->dev == 0) return;
 
     int16_t pcm[FMV_XA_SAMPLES_PER_SECTOR];
     int     n = FmvDecodeXaSector(sector, pcm);
     if (n > 0) {
+#if defined(__SWITCH__)
+        fmv_audout_write(pcm, n / 2); /* n = total samples, /2 for stereo pairs */
+#else
         FmvApplyVolume(pcm, n * (int)sizeof(int16_t), AUDIO_S16LSB);
         SDL_QueueAudio(st->dev, pcm, (Uint32)(n * (int)sizeof(int16_t)));
+#endif
         st->sectorsDecoded++;
     }
 }
@@ -940,7 +1128,6 @@ static int OpenFmvAudio(const ReadAVI::stream_format_auds_t* fmt, FmvAviAudio* o
 
     return 0;
 }
-
 /* Repack 24/32-bit little-endian integer PCM to S16 (keep the top 16 bits). */
 static int ConvertPcmToS16(const unsigned char* src, int src_bytes, int src_bits,
                            unsigned char** out_buf, int* out_bytes)
@@ -974,7 +1161,11 @@ static int ConvertPcmToS16(const unsigned char* src, int src_bytes, int src_bits
 static FILE* OpenDiscImage(void)
 {
     const char* path = PcPort_GetGameDiscPath();
-    FILE* f = (path && path[0]) ? fopen(path, "rb") : NULL;
+    if (!path[0]) {
+        printf("[FMV] No disc image resolved — game data may be missing\n");
+        return NULL;
+    }
+    FILE* f = fopen(path, "rb");
     if (!f) {
         printf("[FMV] Failed to open disc image: %s\n",
                (path && path[0]) ? path : "(no disc found)");
@@ -1019,6 +1210,186 @@ static int PollSkipOrQuit(int* out_quit)
             PsyX_Pad_SkipButtonHeld());
 }
 
+static int PlayAviPath(const char* filepath, int max_frames)
+{
+    FMV_Init();
+
+    ReadAVI readAVI(filepath);
+    if (!readAVI.IsOpen()) {
+        printf("[FMV] Failed to open AVI: %s\n", filepath);
+        return -1;
+    }
+
+    ReadAVI::avi_header_t avi_header = readAVI.GetAviHeader();
+    ReadAVI::stream_format_t stream_format = readAVI.GetVideoFormat();
+
+    if (strcmp(stream_format.compression_type, "MJPG") != 0) {
+        printf("[FMV] Unsupported codec: '%s' (only MJPG supported)\n",
+               stream_format.compression_type);
+        return -1;
+    }
+
+    printf("[FMV] Video: %dx%d, %d frames, %.1f fps\n",
+           stream_format.image_width, stream_format.image_height,
+           avi_header.TotalNumberOfFrames,
+           avi_header.TimeBetweenFrames > 0 ? 1000000.0 / avi_header.TimeBetweenFrames : 0);
+
+    /* Set up audio */
+    ReadAVI::stream_format_auds_t audio_fmt = readAVI.GetAudioFormat();
+#if defined(__SWITCH__)
+    if (audio_fmt.samples_per_second > 0)
+        fmv_audout_init(audio_fmt.samples_per_second);
+    int audoutActive = s_audoutOk;
+#else
+    FmvAviAudio aviAudio;
+    SDL_AudioDeviceID audioDev = (OpenFmvAudio(&audio_fmt, &aviAudio) == 0) ? aviAudio.dev : 0;
+    if (audioDev)
+        SDL_PauseAudioDevice(audioDev, 0);
+#endif
+
+    /* Use combined type mask to read both video and audio in one pass */
+    const int FRAME_TYPE_ALL = ReadAVI::ctype_video_data | ReadAVI::ctype_audio_data;
+
+    ReadAVI::frame_entry_t frame_entry;
+    frame_entry.type = (ReadAVI::chunk_type_t)FRAME_TYPE_ALL;
+    frame_entry.pointer = 0;
+
+    timerCtx_t fmvTimer;
+    Util_InitHPCTimer(&fmvTimer);
+
+    double nextFrameDelay = 0.0;
+    int done_frames = 0;
+
+    Util_GetHPCTime(&fmvTimer, 1);
+
+    /* Flush any pending key events before playback */
+    SDL_PumpEvents();
+    SDL_FlushEvent(SDL_KEYDOWN);
+    SDL_FlushEvent(SDL_KEYUP);
+
+    int skip_armed = 0;
+
+    while (1)
+    {
+        double delta = Util_GetHPCTime(&fmvTimer, 1);
+        if (delta > 1.0)
+            delta = 0.0;
+
+        nextFrameDelay -= delta;
+
+        SDL_PumpEvents();
+        const Uint8* keystate = SDL_GetKeyboardState(NULL);
+        int skipHeld = keystate[SDL_SCANCODE_RETURN] || keystate[SDL_SCANCODE_ESCAPE] ||
+                       keystate[SDL_SCANCODE_SPACE] || PsyX_Pad_SkipButtonHeld();
+        if (!skip_armed) {
+            if (!skipHeld)
+                skip_armed = 1;
+        } else if (skipHeld) {
+            printf("[FMV] Skipped at frame %d/%d\n", done_frames, avi_header.TotalNumberOfFrames);
+            break;
+        }
+
+#if !defined(__SWITCH__)
+        SDL_Event evt;
+        while (SDL_PollEvent(&evt)) {
+            if (evt.type == SDL_QUIT)
+                goto done;
+        }
+#endif
+        if (nextFrameDelay > 0) {
+            SDL_Delay(1);
+            continue;
+        }
+
+        frame_entry.type = (ReadAVI::chunk_type_t)FRAME_TYPE_ALL;
+        int frame_size = readAVI.GetFrameFromIndex(&frame_entry);
+
+        if (frame_size < 0)
+            break;
+
+        if (frame_entry.type == ReadAVI::ctype_audio_data) {
+#if defined(__SWITCH__)
+            if (audoutActive && frame_size > 0) {
+                int nSamples = frame_size / 2;
+                if (audio_fmt.channels == 1) {
+                    static int16_t stereoBuf[8192];
+                    int maxPairs = (int)(sizeof(stereoBuf) / (2 * sizeof(int16_t)));
+                    nSamples = nSamples < maxPairs ? nSamples : maxPairs;
+                    for (int i = nSamples - 1; i >= 0; i--) {
+                        int16_t s = ((const int16_t*)frame_entry.buf)[i];
+                        stereoBuf[i * 2] = s;
+                        stereoBuf[i * 2 + 1] = s;
+                    }
+                    fmv_audout_write(stereoBuf, nSamples);
+                } else {
+                    fmv_audout_write((const int16_t*)frame_entry.buf, nSamples / 2);
+                }
+            }
+#else
+            if (audioDev && frame_size > 0)
+                SDL_QueueAudio(audioDev, frame_entry.buf, frame_size);
+#endif
+            continue;
+        }
+
+        if (max_frames > 0 && done_frames >= max_frames)
+            break;
+
+        if (frame_size > 0 &&
+            (frame_entry.type == ReadAVI::ctype_compressed_video_frame ||
+             frame_entry.type == ReadAVI::ctype_uncompressed_video_frame))
+        {
+            int real_w, real_h;
+            if (UnpackJPEG(frame_entry.buf, frame_size, s_decodeBuffer, &real_w, &real_h) == 0)
+            {
+                DrawVideoFrame(real_w, real_h);
+            }
+
+            if (avi_header.TimeBetweenFrames > 0)
+                nextFrameDelay += (double)avi_header.TimeBetweenFrames / 1000000.0;
+            else
+                nextFrameDelay += 1.0 / 15.0;
+
+            done_frames++;
+        }
+    }
+
+done:
+#if defined(__SWITCH__)
+    fmv_audout_exit();
+#else
+    if (audioDev) {
+        SDL_PauseAudioDevice(audioDev, 1);
+        SDL_CloseAudioDevice(audioDev);
+    }
+#endif
+
+    {
+        int wait_frames = 0;
+        while (wait_frames < 30) {
+            SDL_PumpEvents();
+            const Uint8* ks = SDL_GetKeyboardState(NULL);
+            if (!ks[SDL_SCANCODE_RETURN] && !ks[SDL_SCANCODE_ESCAPE] &&
+                !ks[SDL_SCANCODE_SPACE] && !PsyX_Pad_SkipButtonHeld())
+                break;
+            SDL_Delay(16);
+            wait_frames++;
+        }
+        SDL_PumpEvents();
+        SDL_FlushEvent(SDL_KEYDOWN);
+        SDL_FlushEvent(SDL_KEYUP);
+    }
+
+    printf("[FMV] Playback complete (%d frames)\n", done_frames);
+    return 0;
+}
+
+extern "C" int FMV_PlayAviFile(const char* path, int max_frames)
+{
+    printf("[FMV] FMV_PlayAviFile(%s, %d)\n", path, max_frames);
+    return PlayAviPath(path, max_frames);
+}
+
 /* Play an FMV directly from the BIN disc image using the MDEC software
  * decoder. Audio is *not* decoded here yet — XA dialogue tracks have their
  * own pipeline (xa_player) and FMV soundtrack sync is a follow-up. Returns
@@ -1026,6 +1397,14 @@ static int PollSkipOrQuit(int* out_quit)
 static int PlayFromBin(int table_idx, int max_frames)
 {
     const FmvFileEntry& e = s_fmvFiles[table_idx];
+
+    printf("[FMV] BIN playback: %s (base_sector=0x%05X, n_sectors=%u)\n",
+           e.name, (unsigned)e.base_sector, (unsigned)e.n_sectors);
+
+    if (e.base_sector == 0 && e.n_sectors == 0) {
+        printf("[FMV] %s has no BIN data (AVI-only entry)\n", e.name);
+        return -1;
+    }
 
     FILE* bin = OpenDiscImage();
     if (!bin) return -1;

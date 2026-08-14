@@ -15,8 +15,14 @@
 extern "C" {
 #endif
 
+/* First XA/FMV file index in the game's file enum (shared with xa_player). */
+#define FMV_FIRST_FILE_IDX 2044
+
 /* Play an FMV by file table index. Returns 0 on success, -1 if file not found. */
 int FMV_Play(int file_idx, int max_frames);
+
+/* Play an AVI file from an absolute path. Returns 0 on success, -1 on error. */
+int FMV_PlayAviFile(const char* path, int max_frames);
 
 /* Initialize/shutdown GL resources (call once at startup/exit) */
 void FMV_Init(void);

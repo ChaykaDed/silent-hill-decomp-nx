@@ -14,7 +14,11 @@
 #include "control_style.h"
 #include <PsyX/PsyX_public.h> /* PsyX_LookupGameControllerMapping / RawControllerBindHeld */
 
+#if defined(__SWITCH__)
+#include <SDL2/SDL.h>
+#else
 #include <SDL.h>
+#endif
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>

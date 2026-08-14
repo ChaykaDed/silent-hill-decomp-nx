@@ -1,9 +1,25 @@
 #include "game.h"
+#include <stdio.h>
+#include <stdarg.h>
+
+#if defined(__SWITCH__)
+extern void svcOutputDebugString(const char* str, size_t len);
+static void switch_dbg(const char* fmt, ...) {
+    char buf[256];
+    va_list ap; va_start(ap, fmt);
+    int n = vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    if (n > 0) svcOutputDebugString(buf, (size_t)(n < (int)sizeof(buf) ? n : sizeof(buf)-1));
+}
+#else
+static void switch_dbg(const char* fmt, ...) { (void)fmt; }
+#endif
 
 #include "bodyprog/bodyprog.h"
 #include "bodyprog/screen/screen_data.h"
 #include "bodyprog/screen/screen_draw.h"
 #include "bodyprog/text/text_draw.h"
+#include "bodyprog/text/tr_font_map.h"
 #include "bodyprog/math/math.h"
 
 #ifdef SH_PC_PORT
@@ -180,6 +196,8 @@ void Gfx_StringSetColor(s16 colorId) // 0x8004A8DC
     g_StringColorId = colorId;
 }
 
+extern void GR_DumpVRAMRegion(const char* path, int x, int y, int w, int h);
+
 bool Gfx_StringDraw(char* str, s32 strLength) // 0x8004A8E8
 {
     #define WIDE_SPACE_SIZE 10
@@ -187,9 +205,9 @@ bool Gfx_StringDraw(char* str, s32 strLength) // 0x8004A8E8
 
     // TODO: This only works for one case. There may originally have been some other generic macro.
     #define setSprtUvClut(glyphSprt, idx, clut)                                                                                                     \
-    *((u32*)&(glyphSprt)->u0) = (((idx) % FONT_12X16_ATLAS_COLUMN_COUNT) * FONT_12X16_GLYPH_SIZE_X) + /* `u0`:   Column in atlas. */            \
-                                (ATLAS_BASE_Y << 8)                                                 + /* `v0`:   Row 0 in atlas with offset. */ \
-                                ((clut) << 16)                                                        /* `clut`: Packed magic value. */
+    *((u32*)&(glyphSprt)->u0) = (((idx) * FONT_12X16_GLYPH_SIZE_X) % 256) + /* `u0`:   Column in atlas. */            \
+                                (ATLAS_BASE_Y << 8)                          + /* `v0`:   Row 0 in atlas with offset. */ \
+                                ((clut) << 16)                                 /* `clut`: Packed magic value. */
 
     s32       posX;
     s32       posY;
@@ -222,6 +240,8 @@ bool Gfx_StringDraw(char* str, s32 strLength) // 0x8004A8E8
     packet = NULL;
     result = false;
 
+if (str && str[0] >= 0x20) switch_dbg("[DBG] Gfx_StringDraw: \"%s\" len=%d", str, strLength);
+
     // Set base screen position.
     posX = g_StringPosition.vx;
     posY = g_StringPosition.vy;
@@ -249,6 +269,53 @@ bool Gfx_StringDraw(char* str, s32 strLength) // 0x8004A8E8
         else if (charCode == '&')
         {
             charCode = '^';
+        }
+
+        // UTF-8 to TR font encoding.
+        if (charCode >= 0x80)
+        {
+            uint8_t b0   = charCode;
+            uint32_t cp;
+            int      seqLen;
+
+            if ((b0 & 0xE0) == 0xC0 && (strCpy[1] & 0xC0) == 0x80)
+            {
+                cp     = ((uint32_t)(b0 & 0x1F) << 6) | (strCpy[1] & 0x3F);
+                seqLen = 2;
+            }
+            else if ((b0 & 0xF0) == 0xE0 && (strCpy[1] & 0xC0) == 0x80 && (strCpy[2] & 0xC0) == 0x80)
+            {
+                cp     = ((uint32_t)(b0 & 0x0F) << 12) | ((uint32_t)(strCpy[1] & 0x3F) << 6) | (strCpy[2] & 0x3F);
+                seqLen = 3;
+            }
+            else
+            {
+                strCpy++;
+                sizeCpy--;
+                continue;
+            }
+
+            charCode = tr_encode_codepoint(cp);
+
+            fprintf(stderr, "[TR] U+%04X -> 0x%02X (%c)\n", cp, charCode, charCode >= 0x20 && charCode < 0x7F ? charCode : '.');
+
+            if (charCode == 0)
+            {
+                strCpy  += seqLen;
+                sizeCpy -= seqLen;
+                continue;
+            }
+
+            strCpy  += seqLen - 1;
+            sizeCpy -= seqLen - 1;
+        }
+        else if (charCode < 0x20)
+        {
+            static int first=1;
+            if (first) {
+                first=0;
+                fprintf(stderr,"[TR] Gfx_StringDraw FIRST CALL str=%s\n", str ? str : "(null)");
+            }
         }
 
         // Space.
@@ -422,12 +489,27 @@ bool Gfx_StringDraw(char* str, s32 strLength) // 0x8004A8E8
 
                 posX += glyphWidth;
 
-                u0 = (glyphIdx % FONT_12X16_ATLAS_COLUMN_COUNT) * FONT_12X16_GLYPH_SIZE_X;
+                u0 = (glyphIdx * FONT_12X16_GLYPH_SIZE_X) % 256;
 
                 *((u32*)&glyphPoly->u0) = u0 + (0xF000 + (0x7FD3 << 16));                                                    // `u0`, `v0`, `clut`.
-                *((u32*)&glyphPoly->u1) = u0 + (((((glyphIdx / FONT_12X16_ATLAS_COLUMN_COUNT) & 0xF) | 16) << 16) | 0xFF00); // `u1`, `v1`, `page`.
+                *((u32*)&glyphPoly->u1) = u0 | 0xFF00 | ((((((glyphIdx * FONT_12X16_GLYPH_SIZE_X) / 256) * 4) & 0xF) | 16) << 16); // `u1`, `v1`, `page`.
                 *((u16*)&glyphPoly->u2) = u0 - 0xFF4;                                                                        // `u2`, `v2`.
                 *((u16*)&glyphPoly->u3) = u0 - 0xF4;                                                                         // `u3`, `v3`.
+
+                {
+                    u32 pu0 = *((u32*)&glyphPoly->u0);
+                    u32 pu1 = *((u32*)&glyphPoly->u1);
+                    u8 ft4_u0 = pu0 & 0xFF;
+                    u8 ft4_v0 = (pu0 >> 8) & 0xFF;
+                    u16 ft4_clut = (pu0 >> 16) & 0xFFFF;
+                    u16 ft4_tpage = (pu1 >> 16) & 0xFFFF;
+                    switch_dbg("[FONT] FT4 ch=%c idx=%2d pos=(%4d,%4d*2) u0=%3d v0=%3d clut=0x%04X tpage=%2d "
+                               "glyphW=%2d vramPageXY=(%3d,256) vramUV=(%3d,%3d)\n",
+                               (char)charCode, glyphIdx, posX, posY,
+                               ft4_u0, ft4_v0, ft4_clut, ft4_tpage,
+                               glyphWidth,
+                               (ft4_tpage & 0xF) * 64, (ft4_tpage & 0xF) * 64 + ft4_u0, 256 + ft4_v0);
+                }
 
                 addPrim(ot, glyphPoly);
                 GsOUT_PACKET_P = (u8*)glyphPoly + sizeof(POLY_FT4);
@@ -436,11 +518,16 @@ bool Gfx_StringDraw(char* str, s32 strLength) // 0x8004A8E8
             {
                 posXCpy = (u16)posX;
 
-                glyphSprt              = (SPRT*)packet;
-                *((u32*)&glyphSprt->w) = 0x10000C;
-
                 glyphIdx = charCode - GLYPH_TABLE_ASCII_OFFSET;
                 posX    += FONT_12X16_GLYPH_WIDTHS[glyphIdx];
+
+                tPage = (DR_TPAGE*)packet;
+                setDrawTPage(tPage, 0, 1, ((((glyphIdx * FONT_12X16_GLYPH_SIZE_X) / 256) * 4) & 0xF) | 16);
+                addPrim(ot, tPage);
+                packet += sizeof(DR_TPAGE);
+
+                glyphSprt              = (SPRT*)packet;
+                *((u32*)&glyphSprt->w) = 0x10000C;
 
                 addPrimFast(ot, glyphSprt, 4);
                 *((u32*)&glyphSprt->r0)   = glyphColor;
@@ -449,13 +536,21 @@ bool Gfx_StringDraw(char* str, s32 strLength) // 0x8004A8E8
                 setSprtUvClut(glyphSprt, glyphIdx, 0x7FD3); // TODO: Demagic CLUT arg.
                 //*((u32*)&glyphSprt->u0) = ((glyphIdx % FONT_12X16_ATLAS_COLUMN_COUNT) * FONT_12X16_GLYPH_SIZE_X) + 0xF000 + (0x7FD3 << 16); // `u0`, `v0`, `clut`.
 
+                {
+                    u32 spr_packed = *((u32*)&glyphSprt->u0);
+                    u8 spr_u0 = spr_packed & 0xFF;
+                    u8 spr_v0 = (spr_packed >> 8) & 0xFF;
+                    u16 spr_clut = (spr_packed >> 16) & 0xFFFF;
+                    u16 spr_tpage = ((((glyphIdx * FONT_12X16_GLYPH_SIZE_X) / 256) * 4) & 0xF) | 16;
+                    switch_dbg("[FONT] SPRT ch=%c idx=%2d pos=(%4d,%3d) u0=%3d v0=%3d clut=0x%04X tpage=%2d "
+                               "glyphW=%2d vramPageXY=(%3d,256) vramUV=(%3d,%3d)\n",
+                               (char)charCode, glyphIdx, posXCpy, posY,
+                               spr_u0, spr_v0, spr_clut, spr_tpage,
+                               FONT_12X16_GLYPH_WIDTHS[glyphIdx],
+                               (spr_tpage & 0xF) * 64, (spr_tpage & 0xF) * 64 + spr_u0, 256 + spr_v0);
+                }
+
                 packet += sizeof(SPRT);
-
-                tPage = (DR_TPAGE*)packet;
-                setDrawTPage(tPage, 0, 1, ((glyphIdx / FONT_12X16_ATLAS_COLUMN_COUNT) & 0xF) | 16);
-                addPrim(ot, tPage);
-
-                packet += sizeof(DR_TPAGE);
             }
         }
 #endif
@@ -818,6 +913,40 @@ s32 Gfx_MapMsg_StringDraw(char* mapMsg, s32 strLength) // 0x8004AF18
             charCode = '^';
         }
 
+        // UTF-8 to TR font encoding.
+        if (charCode >= 0x80)
+        {
+            uint32_t cp;
+            int      seqLen;
+
+            if ((charCode & 0xE0) == 0xC0 && (mapMsg[1] & 0xC0) == 0x80)
+            {
+                cp     = ((uint32_t)(charCode & 0x1F) << 6) | (mapMsg[1] & 0x3F);
+                seqLen = 2;
+            }
+            else if ((charCode & 0xF0) == 0xE0 && (mapMsg[1] & 0xC0) == 0x80 && (mapMsg[2] & 0xC0) == 0x80)
+            {
+                cp     = ((uint32_t)(charCode & 0x0F) << 12) | ((uint32_t)(mapMsg[1] & 0x3F) << 6) | (mapMsg[2] & 0x3F);
+                seqLen = 3;
+            }
+            else
+            {
+                mapMsg++;
+                continue;
+            }
+
+            charCode = tr_encode_codepoint(cp);
+
+            if (charCode == 0)
+            {
+                mapMsg += seqLen;
+                continue;
+            }
+
+            mapMsg  += seqLen - 1;
+            strLength -= seqLen - 1;
+        }
+
         // Process `char`.
         switch (charCode)
         {
@@ -1149,12 +1278,27 @@ s32 Gfx_MapMsg_StringDraw(char* mapMsg, s32 strLength) // 0x8004AF18
 
                 glyphPosX += charWidth;
 
-                temp_a0 = (idx % FONT_12X16_ATLAS_COLUMN_COUNT) * FONT_12X16_GLYPH_SIZE_X;
+                temp_a0 = (idx * FONT_12X16_GLYPH_SIZE_X) % 256;
 
                 *((u32*)&glyphPoly->u0) = temp_a0 + 0xF000 + (0x7FD3 << 16);                                                     // `u0`, `v0`, `clut`.
-                *((u32*)&glyphPoly->u1) = temp_a0 + (((((idx / FONT_12X16_ATLAS_COLUMN_COUNT) & 0xF) | 0x10) << 16) | 0xFF00); // `u1`, `v1`, `page`.
+                *((u32*)&glyphPoly->u1) = temp_a0 | 0xFF00 | ((((((idx * FONT_12X16_GLYPH_SIZE_X) / 256) * 4) & 0xF) | 0x10) << 16); // `u1`, `v1`, `page`.
                 *((u16*)&glyphPoly->u2) = temp_a0 - 0xFF4;
                 *((u16*)&glyphPoly->u3) = temp_a0 - 244;
+
+                {
+                    u32 pu0 = *((u32*)&glyphPoly->u0);
+                    u32 pu1 = *((u32*)&glyphPoly->u1);
+                    u8 m_ft4_u0 = pu0 & 0xFF;
+                    u8 m_ft4_v0 = (pu0 >> 8) & 0xFF;
+                    u16 m_ft4_clut = (pu0 >> 16) & 0xFFFF;
+                    u16 m_ft4_tpage = (pu1 >> 16) & 0xFFFF;
+                    switch_dbg("[FONT MAP] FT4 ch=%c idx=%2d pos=(%4d,%4d*2) u0=%3d v0=%3d clut=0x%04X tpage=%2d "
+                               "glyphW=%2d vramPageXY=(%3d,256) vramUV=(%3d,%3d)\n",
+                               (char)charCode, idx, glyphPosX, glyphPosY,
+                               m_ft4_u0, m_ft4_v0, m_ft4_clut, m_ft4_tpage,
+                               charWidth,
+                               (m_ft4_tpage & 0xF) * 64, (m_ft4_tpage & 0xF) * 64 + m_ft4_u0, 256 + m_ft4_v0);
+                }
 
                 addPrim(ot, glyphPoly);
                 GsOUT_PACKET_P = (PACKET*)glyphPoly + sizeof(POLY_FT4);
@@ -1163,24 +1307,37 @@ s32 Gfx_MapMsg_StringDraw(char* mapMsg, s32 strLength) // 0x8004AF18
             {
                 temp_a0_2 = (u16)glyphPosX;
 
-                glyphSprt              = (SPRT*)packet;
-                *((u32*)&glyphSprt->w) = 0x10000C;
-
                 idx        = charCode - CHARCODE_OFFSET;
                 glyphPosX += FONT_12X16_GLYPH_WIDTHS[idx];
+
+                tPage = (DR_TPAGE*)packet;
+                setDrawTPage(tPage, 0, 1, ((((idx * FONT_12X16_GLYPH_SIZE_X) / 256) * 4) & 0xF) | 0x10);
+                addPrim(ot, tPage);
+                packet += sizeof(DR_TPAGE);
+
+                glyphSprt              = (SPRT*)packet;
+                *((u32*)&glyphSprt->w) = 0x10000C;
 
                 addPrimFast(ot, glyphSprt, 4);
                 *((u32*)&glyphSprt->r0)   = color;
                 *((u32*)(&glyphSprt->x0)) = temp_a0_2 + ((glyphPosY) << 16);
-                *((u32*)&glyphSprt->u0)   = (s32)(((idx % FONT_12X16_ATLAS_COLUMN_COUNT) * FONT_12X16_GLYPH_SIZE_X) + 0xF000 + (0x7FD3 << 16)); // `u0`, `v0`, `clut`.
+                *((u32*)&glyphSprt->u0)   = (s32)(((idx * FONT_12X16_GLYPH_SIZE_X) % 256) + 0xF000 + (0x7FD3 << 16)); // `u0`, `v0`, `clut`.
+
+                {
+                    u32 m_spr_packed = *((u32*)&glyphSprt->u0);
+                    u8 m_spr_u0 = m_spr_packed & 0xFF;
+                    u8 m_spr_v0 = (m_spr_packed >> 8) & 0xFF;
+                    u16 m_spr_clut = (m_spr_packed >> 16) & 0xFFFF;
+                    u16 m_spr_tpage = ((((idx * FONT_12X16_GLYPH_SIZE_X) / 256) * 4) & 0xF) | 16;
+                    switch_dbg("[FONT MAP] SPRT ch=%c idx=%2d pos=(%4d,%3d) u0=%3d v0=%3d clut=0x%04X tpage=%2d "
+                               "glyphW=%2d vramPageXY=(%3d,256) vramUV=(%3d,%3d)\n",
+                               (char)charCode, idx, temp_a0_2, glyphPosY,
+                               m_spr_u0, m_spr_v0, m_spr_clut, m_spr_tpage,
+                               FONT_12X16_GLYPH_WIDTHS[idx],
+                               (m_spr_tpage & 0xF) * 64, (m_spr_tpage & 0xF) * 64 + m_spr_u0, 256 + m_spr_v0);
+                }
 
                 packet += sizeof(SPRT);
-
-                tPage = (DR_TPAGE*)packet;
-                setDrawTPage(tPage, 0, 1, ((idx / FONT_12X16_ATLAS_COLUMN_COUNT) & 0xF) | 0x10);
-                addPrim(ot, tPage);
-
-                packet += sizeof(DR_TPAGE);
             }
 #endif
 

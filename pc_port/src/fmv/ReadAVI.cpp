@@ -47,14 +47,17 @@
  *    scan — aborting was why big ffmpeg files played a few seconds and cut.
  *  - WAVE_FORMAT_EXTENSIBLE audio (ffmpeg emits it for >2ch or float PCM) is
  *    resolved to its real SubFormat tag.
+ *
+ * Switch port: FILE* instead of std::fstream — libstdc++'s fstream does not
+ * survive the devkitPro/newlib environment (open/seek failures on sdmc:).
+ * Offsets are kept 64-bit; fseek receives them truncated to long, which is
+ * fine for every AVI the port plays (all well under 2 GB).
  */
 
 #include "ReadAVI.h"
 #include <string.h>
 
 #define ZEROIZE(x) {memset(&x, 0, sizeof(x));}
-
-using namespace std;
 
 ReadAVI::chunk_type_int_t ReadAVI::chunk_types[ChunkTypesCnt] = {
     {"db", ctype_uncompressed_video_frame},
@@ -69,15 +72,16 @@ ReadAVI::ReadAVI(const char* filename)
     stream_format_vid.palette = NULL;
     data_buf_size = 0;
     fileSize = 0;
+    mFile = NULL;
     headers_parsed = false;
 
-    inFile.open(filename, ios_base::in | ios_base::binary);
-    if (!inFile.is_open())
+    mFile = fopen(filename, "rb");
+    if (mFile == NULL)
         return;
 
-    inFile.seekg(0, ios_base::end);
-    fileSize = (int64_t)inFile.tellg();
-    inFile.seekg(0, ios_base::beg);
+    fseek(mFile, 0, SEEK_END);
+    fileSize = (int64_t)ftell(mFile);
+    fseek(mFile, 0, SEEK_SET);
 
     try {
         /* Walk every top-level RIFF segment: `AVI ` first, then any number
@@ -89,8 +93,7 @@ ReadAVI::ReadAVI(const char* filename)
         while (pos + 12 <= fileSize) {
             char id[5], type[5];
 
-            inFile.clear();
-            inFile.seekg((streamoff)pos, ios_base::beg);
+            fseek(mFile, (long)pos, SEEK_SET);
             read_chars(id, 4);
             uint32_t size = read_uint();
             read_chars(type, 4);
@@ -126,8 +129,10 @@ ReadAVI::~ReadAVI()
 
 void ReadAVI::free()
 {
-    if (inFile.is_open())
-        inFile.close();
+    if (mFile) {
+        fclose(mFile);
+        mFile = NULL;
+    }
     delete[] stream_format_vid.palette;
     stream_format_vid.palette = NULL;
     delete[] data_buf;
@@ -152,8 +157,8 @@ int ReadAVI::GetFrameFromIndex(frame_entry_t* frame_entry)
         if (index_entries[i].type & frame_entry->type) {
             check_data_buf(index_entries[i].dwChunkLength);
             try {
-                inFile.clear();
-                inFile.seekg((streamoff)index_entries[i].dwChunkOffset, ios_base::beg);
+                clearerr(mFile);
+                fseek(mFile, (long)index_entries[i].dwChunkOffset, SEEK_SET);
                 read_chars_bin(data_buf, index_entries[i].dwChunkLength);
             }
             catch (...) {
@@ -282,23 +287,23 @@ int ReadAVI::parse_hdrl_list()
     chunk_size = read_uint();
     read_chars(chunk_type, 4);
 
-    end_of_chunk = (int64_t)inFile.tellg() + (int64_t)chunk_size - 4;
+    end_of_chunk = (int64_t)ftell(mFile) + (int64_t)chunk_size - 4;
 
     if (strcmp(chunk_id, "JUNK") == 0) {
-        inFile.seekg((streamoff)end_of_chunk, ios_base::beg);
+        fseek(mFile, (long)end_of_chunk, SEEK_SET);
         return 0;
     }
 
-    while ((int64_t)inFile.tellg() < end_of_chunk) {
+    while ((int64_t)ftell(mFile) < end_of_chunk) {
         read_chars(chunk_type, 4);
         chunk_size = read_uint();
-        next_chunk = (int64_t)inFile.tellg() + (int64_t)chunk_size;
+        next_chunk = (int64_t)ftell(mFile) + (int64_t)chunk_size;
 
         if (strcmp("strh", chunk_type) == 0) {
-            int64_t marker = (int64_t)inFile.tellg();
+            int64_t marker = (int64_t)ftell(mFile);
             char buffer[5];
             read_chars(buffer, 4);
-            inFile.seekg((streamoff)marker, ios_base::beg);
+            fseek(mFile, (long)marker, SEEK_SET);
 
             if (strcmp(buffer, "vids") == 0) {
                 stream_type = 0;
@@ -317,10 +322,10 @@ int ReadAVI::parse_hdrl_list()
                 read_stream_format_auds(chunk_size);
         }
 
-        inFile.seekg((streamoff)(next_chunk + (next_chunk & 1)), ios_base::beg);
+        fseek(mFile, (long)(next_chunk + (next_chunk & 1)), SEEK_SET);
     }
 
-    inFile.seekg((streamoff)end_of_chunk, ios_base::beg);
+    fseek(mFile, (long)end_of_chunk, SEEK_SET);
     return 0;
 }
 
@@ -329,15 +334,15 @@ int ReadAVI::parse_hdrl_list()
  * ix## sub-indexes, JUNK padding) is skipped by its declared size. */
 int ReadAVI::parse_movi(int64_t list_end)
 {
-    while ((int64_t)inFile.tellg() + 8 <= list_end) {
+    while ((int64_t)ftell(mFile) + 8 <= list_end) {
         char chunk_id[5];
         index_entry_t index_entry;
 
-        int64_t offset = (int64_t)inFile.tellg();
+        int64_t offset = (int64_t)ftell(mFile);
         read_chars(chunk_id, 4);
         uint32_t chunk_size = read_uint();
 
-        if (!inFile.good())
+        if (ferror(mFile))
             break;
 
         if (strcmp(chunk_id, "LIST") == 0) {
@@ -357,7 +362,7 @@ int ReadAVI::parse_movi(int64_t list_end)
         next += (next & 1); /* chunks are word-aligned */
         if (next <= offset) /* corrupt size — bail rather than loop forever */
             break;
-        inFile.seekg((streamoff)next, ios_base::beg);
+        fseek(mFile, (long)next, SEEK_SET);
     }
     return 0;
 }
@@ -366,7 +371,7 @@ int ReadAVI::parse_hdrl(unsigned int size)
 {
     char chunk_id[5];
     uint32_t chunk_size;
-    int64_t offset = (int64_t)inFile.tellg();
+    int64_t offset = (int64_t)ftell(mFile);
 
     read_chars(chunk_id, 4);
     chunk_size = read_uint();
@@ -374,7 +379,7 @@ int ReadAVI::parse_hdrl(unsigned int size)
 
     read_avi_header();
 
-    while ((int64_t)inFile.tellg() < offset + (int64_t)size - 4)
+    while ((int64_t)ftell(mFile) < offset + (int64_t)size - 4)
         parse_hdrl_list();
 
     return 0;
@@ -398,14 +403,14 @@ int ReadAVI::parse_riff_segment(int64_t segment_end, bool first_segment)
         ZEROIZE(stream_format_auds);
     }
 
-    while ((int64_t)inFile.tellg() + 8 <= segment_end) {
+    while ((int64_t)ftell(mFile) + 8 <= segment_end) {
         read_chars(chunk_id, 4);
         chunk_size = read_uint();
 
-        if (!inFile.good())
+        if (ferror(mFile))
             break;
 
-        end_of_subchunk = (int64_t)inFile.tellg() + (int64_t)chunk_size;
+        end_of_subchunk = (int64_t)ftell(mFile) + (int64_t)chunk_size;
 
         if (strcmp("LIST", chunk_id) == 0) {
             read_chars(chunk_type, 4);
@@ -426,8 +431,8 @@ int ReadAVI::parse_riff_segment(int64_t segment_end, bool first_segment)
         end_of_subchunk += (end_of_subchunk & 1);
         if (end_of_subchunk > segment_end)
             break;
-        inFile.clear();
-        inFile.seekg((streamoff)end_of_subchunk, ios_base::beg);
+        clearerr(mFile);
+        fseek(mFile, (long)end_of_subchunk, SEEK_SET);
     }
 
     if (first_segment && stream_format_vid.palette) {
@@ -440,7 +445,7 @@ int ReadAVI::parse_riff_segment(int64_t segment_end, bool first_segment)
 uint32_t ReadAVI::read_uint()
 {
     unsigned char buf[4];
-    inFile.read((char*)buf, 4);
+    fread(buf, 1, 4, mFile);
     return (uint32_t)buf[0] | ((uint32_t)buf[1] << 8) |
            ((uint32_t)buf[2] << 16) | ((uint32_t)buf[3] << 24);
 }
@@ -448,24 +453,24 @@ uint32_t ReadAVI::read_uint()
 int ReadAVI::read_int()
 {
     unsigned char buf[4];
-    inFile.read((char*)buf, 4);
+    fread(buf, 1, 4, mFile);
     return buf[0] | (buf[1] << 8) | (buf[2] << 16) | (buf[3] << 24);
 }
 
 int ReadAVI::read_word()
 {
     unsigned char buf[2];
-    inFile.read((char*)buf, 2);
+    fread(buf, 1, 2, mFile);
     return buf[0] | (buf[1] << 8);
 }
 
 void ReadAVI::read_chars(char* s, int count)
 {
-    inFile.read(s, count);
+    fread(s, 1, (size_t)count, mFile);
     s[count] = 0;
 }
 
 void ReadAVI::read_chars_bin(unsigned char* s, int count)
 {
-    inFile.read((char*)s, count);
+    fread(s, 1, (size_t)count, mFile);
 }

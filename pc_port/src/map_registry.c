@@ -214,7 +214,11 @@ void MapRegistry_Load(e_MapIdx id)
     g_CurrentMapIdx = id;
 
     /* Try loading the map overlay DLL first. */
+#ifdef __SWITCH__
+    header = NULL;  /* No dynamic DLL loading on Switch — always use statically linked overlays */
+#else
     header = MapOverlay_Load(id);
+#endif
     if (header != NULL)
     {
         g_pMapOverlayHeader = header;

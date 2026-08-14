@@ -5,6 +5,7 @@
 #include "bodyprog/bodyprog.h"
 #ifdef SH_PC_PORT
 #include <stdio.h>
+#include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
@@ -27,6 +28,20 @@
 #include <dirent.h>
 #include <sys/stat.h>
 #include <strings.h>
+#endif
+
+#if defined(__SWITCH__)
+#include <unistd.h>
+extern void svcOutputDebugString(const char* str, size_t len);
+static void switch_dbg(const char* fmt, ...) {
+    char buf[256];
+    va_list ap; va_start(ap, fmt);
+    int n = vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    if (n > 0) svcOutputDebugString(buf, (size_t)(n < (int)sizeof(buf) ? n : sizeof(buf)-1));
+}
+#else
+static void switch_dbg(const char* fmt, ...) { (void)fmt; }
 #endif
 
 /* Forensics for the FS-queue stomp family (SaveLoad.log / SewerCrash*.log):
@@ -696,7 +711,7 @@ bool Fs_QueueTickRead(s_FsQueueEntry* entry)
         {
             s_looseInitLogged = 1;
             const char* verb = getenv("SH_LOOSE_VERBOSE");
-            SH_DBG("[LOOSE/INIT] allow_loose_files=%d  base=gamedata/load/  verbose=%s",
+            switch_dbg("[LOOSE/INIT] allow_loose_files=%d  base=gamedata/load/  verbose=%s",
                 g_PcConfig.allowLooseFiles,
                 (verb && verb[0] && verb[0] != '0') ? "yes" : "no");
         }
@@ -713,6 +728,18 @@ bool Fs_QueueTickRead(s_FsQueueEntry* entry)
                               loosePath, sizeof(loosePath),
                               strippedFolder, sizeof(strippedFolder),
                               nameBuf, sizeof(nameBuf));
+
+        switch_dbg("[LOOSE] probing: %s (fidx=%d)", loosePath, file->name0123);
+
+#ifdef __SWITCH__
+        {
+            char cwdbuf[256];
+            if (getcwd(cwdbuf, sizeof(cwdbuf)) != NULL)
+                switch_dbg("[LOOSE] CWD: %s", cwdbuf);
+            else
+                switch_dbg("[LOOSE] CWD: (getcwd failed)");
+        }
+#endif
 
         static int s_hits = 0;
         static int s_misses = 0;
@@ -884,6 +911,7 @@ bool Fs_QueueTickRead(s_FsQueueEntry* entry)
                 size_t got = fread(entry->data, 1, bufSize, lf);
                 fclose(lf);
                 s_hits++;
+                switch_dbg("[LOOSE] HIT: %s", loosePath);
                 if (s_hits <= 64)
                 {
                     SH_DBG("[LOOSE] hit: %s -> %u/%u bytes (file=%ld)",
@@ -925,6 +953,7 @@ bool Fs_QueueTickRead(s_FsQueueEntry* entry)
         else if (!pngOverride)
         {
             s_misses++;
+            switch_dbg("[LOOSE] MISS: %s", loosePath);
             const char* verb = getenv("SH_LOOSE_VERBOSE");
             int verbose = (verb && verb[0] && verb[0] != '0');
             if (verbose && s_misses <= 256)
@@ -1208,6 +1237,13 @@ bool Fs_QueuePostLoadTim(s_FsQueueEntry* entry)
 #endif
     OpenTIM((u64*)entry->externalData);
     ReadTIM(&tim);
+#ifdef __SWITCH__
+    switch_dbg("[TIM] mode=0x%x image=%p clut=%p prect=(%d,%d,%d,%d) crect=(%d,%d,%d,%d)",
+        tim.mode, (void*)tim.paddr, (void*)tim.caddr,
+        tim.prect->x, tim.prect->y, tim.prect->w, tim.prect->h,
+        tim.crect ? tim.crect->x : -1, tim.crect ? tim.crect->y : -1,
+        tim.crect ? tim.crect->w : -1, tim.crect ? tim.crect->h : -1);
+#endif
 #ifdef SH_PC_PORT
     { extern FILE* g_ShDebugLog; if (g_ShDebugLog && !composeResume) { fprintf(g_ShDebugLog, "[BOOT0/TIM] post ReadTIM: prect=%p caddr=%p paddr=%p mode=%u\n",
         (void*)tim.prect, (void*)tim.caddr, (void*)tim.paddr, (unsigned)tim.mode); fflush(g_ShDebugLog); } }
@@ -1247,6 +1283,10 @@ bool Fs_QueuePostLoadTim(s_FsQueueEntry* entry)
     {
         LoadImage(&tempRect, tim.paddr);
     }
+#ifdef __SWITCH__
+    switch_dbg("[TIM] pixel LoadImage: dst=(%d,%d) size=(%d,%d)",
+        (int)tempRect.x, (int)tempRect.y, (int)tempRect.w, (int)tempRect.h);
+#endif
 #ifdef SH_PC_PORT
     pixelRect = tempRect;
     /* tim.mode bits 0-2: 0=4bpp, 1=8bpp, 2=16bpp, 3=24bpp. */
@@ -1276,6 +1316,10 @@ bool Fs_QueuePostLoadTim(s_FsQueueEntry* entry)
         {
             LoadImage(&tempRect, tim.caddr);
         }
+#ifdef __SWITCH__
+        switch_dbg("[TIM] CLUT LoadImage: dst=(%d,%d) size=(%d,%d)",
+            (int)tempRect.x, (int)tempRect.y, (int)tempRect.w, (int)tempRect.h);
+#endif
 #ifdef SH_PC_PORT
         clutRect = tempRect;
         haveClut = true;

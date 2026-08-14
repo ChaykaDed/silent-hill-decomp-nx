@@ -15,7 +15,7 @@
 #ifndef READAVI_H_
 #define READAVI_H_
 
-#include <fstream>
+#include <stdio.h>
 #include <vector>
 #include <stdint.h>
 
@@ -98,7 +98,7 @@ public:
     ReadAVI(const char* filename);
     virtual ~ReadAVI();
 
-    bool IsOpen() const { return inFile.is_open() && index_entries.size() > 0; }
+    bool IsOpen() const { return mFile != NULL && index_entries.size() > 0; }
 
     avi_header_t GetAviHeader() { return avi_header; }
     stream_format_t GetVideoFormat() { return stream_format_vid; }
@@ -130,7 +130,7 @@ private:
     static chunk_type_int_t chunk_types[ChunkTypesCnt];
 
     std::vector<index_entry_t> index_entries;
-    std::ifstream inFile;
+    FILE* mFile;
     avi_header_t avi_header;
     stream_header_t stream_header_vid;
     stream_format_t stream_format_vid;

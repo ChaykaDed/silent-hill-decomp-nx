@@ -67,6 +67,8 @@ void GameState_MovieIntro_Update(void) // 0x801E279C
     }
 #endif
 
+
+
     open_main((g_GameWorkConst->config.extraOptionsEnabled & (1 << 0)) ? FILE_XA_C2_20670 : FILE_XA_C1_20670, 0);
     Game_StateSetNext(GameState_MainMenu);
 

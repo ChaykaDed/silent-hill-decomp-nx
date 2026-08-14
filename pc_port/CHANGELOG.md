@@ -1,5 +1,8 @@
 # Silent Hill PC Port — Changelog
 
+## Switch-port-2026.06.29 -- 2026-06-29
+- Switch port initial bringup: cross-compilation (devkitA64), native GLES3 headers, link cleanup
+
 ## beta-2026.08.14.1 -- 2026-08-14
 - Added achievement viewer to main menu, press map key 
 - Added text to main menu to show achievement button (only visible when they're enabled)

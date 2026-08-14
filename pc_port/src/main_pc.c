@@ -14,7 +14,11 @@
 #include <time.h>
 
 #define SDL_MAIN_HANDLED
+#if defined(__SWITCH__)
+#include <SDL2/SDL.h>
+#else
 #include <SDL.h>
+#endif
 
 #include "common.h"
 #include "game.h"
@@ -33,6 +37,12 @@
 
 #include <libgpu.h>
 #include <libgte.h>
+
+/* PC-port global config variables — referenced from dbg_overlay.c as extern */
+#if defined(__SWITCH__)
+int g_cfg_msaaSamples;
+int g_cfg_postProcess;
+#endif
 #include <libetc.h>
 #include <libspu.h>
 #include <libcd.h>
@@ -706,6 +716,7 @@ int main(int argc, char* argv[])
     atexit(Sh_LogAtExitFlush);
     Sh_InstallCrashFilter();
 
+    fprintf(stderr, "[BOOT] Silent Hill Switch port starting\n");
     PrintBanner();
     ParseArgs(argc, argv);
 
@@ -1232,6 +1243,11 @@ int main(int argc, char* argv[])
         if (cdImagePath[0]) {
             SH_LOG("CD image found, initializing CDFS...");
             PsyX_CDFS_Init(cdImagePath, 0, 0);
+#if defined(__SWITCH__)
+        } else {
+            SH_WARN("Game will not be able to load assets without a disc image.");
+        }
+#else
         } else {
             /* Every asset read from here on fails, and the first one takes the
              * process down. On Windows the crash handler at least pops a box;
@@ -1254,6 +1270,7 @@ int main(int argc, char* argv[])
             PsyX_Shutdown();
             return 1;
         }
+#endif
     }
 
     /* Region-specific data tweaks now that g_GameRegion is known (e.g. PAL's

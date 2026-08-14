@@ -19,6 +19,9 @@ extern "C" {
 #endif
 extern int  g_PsxUsePgxp;
 extern int  g_PsyX_UsePerPixelFlashlight;
+extern int  g_PsyX_FlashlightActive;
+extern float  g_PsyX_FlashlightPos[3];
+extern float  g_PsyX_FlashlightDir[3];
 extern void PGXP_StoreAddr(void* addr, int slot);
 #ifdef __cplusplus
 }

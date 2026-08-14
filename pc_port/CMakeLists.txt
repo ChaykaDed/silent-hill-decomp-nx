@@ -42,9 +42,21 @@ option(SH_FMV_FFMPEG "Enable ffmpeg FMV fallback decoder (h264/h265/vp9/av1, mp4
 set(SH_VERSION "USA" CACHE STRING "Game version (USA, EUR, JAP0, JAP1, JAP2)")
 
 # =============================================================================
+# Platform Detection (Switch/NX vs PC)
+# =============================================================================
+if(CMAKE_SYSTEM_NAME STREQUAL "Generic" AND CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
+    message(STATUS "Building for Nintendo Switch (NX)")
+    set(SH_SWITCH ON)
+    add_compile_definitions(__SWITCH__)
+else()
+    message(STATUS "Building for PC (Windows/Linux/macOS)")
+    set(SH_SWITCH OFF)
+endif()
+
+# =============================================================================
 # AddressSanitizer (optional, for debugging memory corruption)
 # =============================================================================
-if(SH_ASAN)
+if(SH_ASAN AND NOT SH_SWITCH)
     message(STATUS "AddressSanitizer ENABLED")
     add_compile_options(-fsanitize=address -fno-omit-frame-pointer)
     add_link_options(-fsanitize=address)
@@ -103,12 +115,20 @@ endif()
 # =============================================================================
 # SDL2
 # =============================================================================
-find_package(SDL2 QUIET)
-if(NOT SDL2_FOUND)
-    # Try pkg-config
-    find_package(PkgConfig QUIET)
-    if(PkgConfig_FOUND)
-        pkg_check_modules(SDL2 sdl2)
+if(SH_SWITCH)
+    # Switch: Use static SDL2 from devkitPro
+    set(SDL2_FOUND TRUE)
+    set(SDL2_LIBRARIES ${SDL2_LIBRARY})
+    set(SDL2_INCLUDE_DIRS ${SDL2_INCLUDE_DIR})
+    message(STATUS "Switch SDL2: ${SDL2_LIBRARY}")
+else()
+    find_package(SDL2 QUIET)
+    if(NOT SDL2_FOUND)
+        # Try pkg-config
+        find_package(PkgConfig QUIET)
+        if(PkgConfig_FOUND)
+            pkg_check_modules(SDL2 sdl2)
+        endif()
     endif()
 endif()
 
@@ -181,6 +201,11 @@ list(FILTER PC_PORT_SOURCES EXCLUDE REGEX "map_overlay_stub\\.c$")
 # PC PORT: drop the combat_target.c aiming shim; the real decompiled func_8005CD38
 # (src/bodyprog/bodyprog_combat_8005BF38.c) now provides target selection.
 list(FILTER PC_PORT_SOURCES EXCLUDE REGEX "combat_target\\.c$")
+# Switch: drop dll_loader.c (uses dlopen/dlfcn.h which doesn't exist on bare-metal Switch)
+if(SH_SWITCH)
+    list(FILTER PC_PORT_SOURCES EXCLUDE REGEX "dll_loader\\.c$")
+    list(FILTER PC_PORT_SOURCES EXCLUDE REGEX "map_overlay_loader\\.c$")
+endif()
 
 # Windows: compile the .rc so the exe carries an application icon (Explorer,
 # taskbar, title bar). windres resolves the ICON path relative to the .rc dir.
@@ -234,7 +259,14 @@ else()
     message(STATUS "RetroAchievements: disabled (rcheevos submodule missing — run: git submodule update --init --recursive)")
 endif()
 
-add_executable(SilentHillPC
+# Set output name based on platform
+if(SH_SWITCH)
+    set(EXECUTABLE_NAME SilentHillPC)
+else()
+    set(EXECUTABLE_NAME SilentHillPC)
+endif()
+
+add_executable(${EXECUTABLE_NAME}
     ${PC_PORT_SOURCES}
     ${MAIN_SOURCES}
     ${BODYPROG_SOURCES}
@@ -247,15 +279,18 @@ add_executable(SilentHillPC
 # On Linux, ENABLE_EXPORTS adds -rdynamic so dlopen'd libraries see exe symbols.
 # On Windows/MinGW, we additionally need --export-all-symbols because MinGW
 # only exports __declspec(dllexport)-marked symbols by default.
-set_target_properties(SilentHillPC PROPERTIES ENABLE_EXPORTS ON)
-if(MINGW)
-    target_link_options(SilentHillPC PRIVATE "-Wl,--export-all-symbols")
-    # Build as a GUI (windows) subsystem app so Windows doesn't spawn a console
-    # window at launch. We keep the standard C entry (SDL_MAIN_HANDLED is set, so
-    # main() is the real entry); force -emainCRTStartup because the windows
-    # subsystem default entry is WinMainCRTStartup, which we don't provide.
-    # External-console mode calls AllocConsole() at runtime (see main_pc.c).
-    target_link_options(SilentHillPC PRIVATE "-Wl,--subsystem,windows" "-Wl,-emainCRTStartup")
+# (Not applicable for Switch/NX)
+if(NOT SH_SWITCH)
+    set_target_properties(${EXECUTABLE_NAME} PROPERTIES ENABLE_EXPORTS ON)
+    if(MINGW)
+        target_link_options(${EXECUTABLE_NAME} PRIVATE "-Wl,--export-all-symbols")
+        # Build as a GUI (windows) subsystem app so Windows doesn't spawn a console
+        # window at launch. We keep the standard C entry (SDL_MAIN_HANDLED is set, so
+        # main() is the real entry); force -emainCRTStartup because the windows
+        # subsystem default entry is WinMainCRTStartup, which we don't provide.
+        # External-console mode calls AllocConsole() at runtime (see main_pc.c).
+        target_link_options(${EXECUTABLE_NAME} PRIVATE "-Wl,--subsystem,windows" "-Wl,-emainCRTStartup")
+    endif()
 endif()
 
 # Shipped runtime assets: pc_port/assets/ mirrors the game folder layout
@@ -269,7 +304,7 @@ add_custom_command(TARGET SilentHillPC POST_BUILD
 )
 
 # Game-specific defines (only on our target, NOT PsyCross)
-target_compile_definitions(SilentHillPC PRIVATE
+target_compile_definitions(${EXECUTABLE_NAME} PRIVATE
     VER_${SH_VERSION}
     SH_PC_PORT
     SKIP_ASM
@@ -296,7 +331,7 @@ set_property(SOURCE "${CMAKE_SOURCE_DIR}/src/xa_player.c" APPEND PROPERTY
         "XaPlayer_SetMasterVolume=PcLegacyXa_SetMasterVolume"
 )
 if(SH_DEBUG)
-    target_compile_definitions(SilentHillPC PRIVATE SH_DEBUG=1)
+    target_compile_definitions(${EXECUTABLE_NAME} PRIVATE SH_DEBUG=1)
 endif()
 
 # =============================================================================
@@ -315,13 +350,13 @@ add_custom_target(gen_build_info ALL
     BYPRODUCTS ${CMAKE_BINARY_DIR}/sh_build_info.h ${CMAKE_BINARY_DIR}/sh_version.h
     COMMENT "Generating sh_build_info.h + sh_version.h"
 )
-add_dependencies(SilentHillPC gen_build_info)
-target_include_directories(SilentHillPC PRIVATE ${CMAKE_BINARY_DIR})
+add_dependencies(${EXECUTABLE_NAME} gen_build_info)
+target_include_directories(${EXECUTABLE_NAME} PRIVATE ${CMAKE_BINARY_DIR})
 
 # =============================================================================
 # Include paths
 # =============================================================================
-target_include_directories(SilentHillPC PRIVATE
+target_include_directories(${EXECUTABLE_NAME} PRIVATE
     # PC port compatibility headers (searched FIRST to override psyq/)
     "${CMAKE_SOURCE_DIR}/include"
     "${CMAKE_SOURCE_DIR}/include/psyq_compat"
@@ -337,7 +372,7 @@ target_include_directories(SilentHillPC PRIVATE
 # OpenAL headers (xa_player.c uses AL directly). Set by build.sh on macOS to
 # point at Homebrew openal-soft; unset on the Windows/MSYS2 build (no-op).
 if(OPENAL_INCLUDE_DIR)
-    target_include_directories(SilentHillPC PRIVATE "${OPENAL_INCLUDE_DIR}")
+    target_include_directories(${EXECUTABLE_NAME} PRIVATE "${OPENAL_INCLUDE_DIR}")
 endif()
 
 # =============================================================================
@@ -350,7 +385,7 @@ find_path(JPEG_INCLUDE_DIR jpeglib.h)
 # =============================================================================
 # Linking
 # =============================================================================
-target_link_libraries(SilentHillPC PRIVATE
+target_link_libraries(${EXECUTABLE_NAME} PRIVATE
     psycross_static
 )
 
@@ -389,40 +424,42 @@ if(UNIX AND NOT APPLE)
 endif()
 
 if(SDL2_FOUND)
-    target_link_libraries(SilentHillPC PRIVATE SDL2::SDL2)
+    #target_link_libraries(${EXECUTABLE_NAME} PRIVATE SDL2::SDL2)
     # The code includes <SDL2/SDL.h>, which needs the dir CONTAINING SDL2/ on
     # the search path. On Linux/Windows the SDL2 include dir is .../include
     # (so SDL2/ resolves). Homebrew's SDL2Config points it at .../include/SDL2
     # (the subdir itself), so only <SDL.h> would resolve — add the parent so
     # the SDL2/ prefix works there too. Harmless on Linux/Windows.
-    get_target_property(_sdl2_incs SDL2::SDL2 INTERFACE_INCLUDE_DIRECTORIES)
-    if(_sdl2_incs)
-        foreach(_d IN LISTS _sdl2_incs)
-            if(_d MATCHES "/SDL2$")
-                get_filename_component(_parent "${_d}" DIRECTORY)
-                target_include_directories(SilentHillPC PRIVATE "${_parent}")
-            endif()
-        endforeach()
+    if(NOT SH_SWITCH)
+        get_target_property(_sdl2_incs SDL2::SDL2 INTERFACE_INCLUDE_DIRECTORIES)
+        if(_sdl2_incs)
+            foreach(_d IN LISTS _sdl2_incs)
+                if(_d MATCHES "/SDL2$")
+                    get_filename_component(_parent "${_d}" DIRECTORY)
+                    target_include_directories(${EXECUTABLE_NAME} PRIVATE "${_parent}")
+                endif()
+            endforeach()
+        endif()
     endif()
 elseif(SDL2_LIBRARIES)
-    target_link_libraries(SilentHillPC PRIVATE ${SDL2_LIBRARIES})
-    target_include_directories(SilentHillPC PRIVATE ${SDL2_INCLUDE_DIRS})
+    target_link_libraries(${EXECUTABLE_NAME} PRIVATE ${SDL2_LIBRARIES})
+    target_include_directories(${EXECUTABLE_NAME} PRIVATE ${SDL2_INCLUDE_DIRS})
     # Same <SDL2/SDL.h> prefix fix for the pkg-config path.
     foreach(_d IN LISTS SDL2_INCLUDE_DIRS)
         if(_d MATCHES "/SDL2$")
             get_filename_component(_parent "${_d}" DIRECTORY)
-            target_include_directories(SilentHillPC PRIVATE "${_parent}")
+            target_include_directories(${EXECUTABLE_NAME} PRIVATE "${_parent}")
         endif()
     endforeach()
 endif()
 
 if(JPEG_LIBRARY)
-    target_link_libraries(SilentHillPC PRIVATE ${JPEG_LIBRARY})
+    target_link_libraries(${EXECUTABLE_NAME} PRIVATE ${JPEG_LIBRARY})
     if(JPEG_INCLUDE_DIR)
-        target_include_directories(SilentHillPC PRIVATE ${JPEG_INCLUDE_DIR})
+        target_include_directories(${EXECUTABLE_NAME} PRIVATE ${JPEG_INCLUDE_DIR})
     endif()
 else()
-    target_link_libraries(SilentHillPC PRIVATE jpeg)
+    target_link_libraries(${EXECUTABLE_NAME} PRIVATE jpeg)
 endif()
 
 # =============================================================================
@@ -444,7 +481,7 @@ endif()
 set(SH_FFMPEG_MIN_AVCODEC_MAJOR 60)
 set(SH_FFMPEG_PREFIX "" CACHE PATH
     "Prefix holding ffmpeg development headers to build against (uses <prefix>/include)")
-if(SH_FMV_FFMPEG)
+if(SH_FMV_FFMPEG AND NOT SH_SWITCH)
     set(FFMPEG_HEADER_DIRS "")
     set(FFMPEG_HEADERS_FOUND FALSE)
     if(SH_FFMPEG_PREFIX)
@@ -504,26 +541,24 @@ if(SH_FMV_FFMPEG)
             set(_ff_version_header "${_ff_header_root}/libavcodec/version.h")
         endif()
         if(_ff_header_root AND EXISTS "${_ff_version_header}")
-            file(STRINGS "${_ff_version_header}" _ff_major_lines
-                 REGEX "^#define[ \t]+LIBAVCODEC_VERSION_MAJOR[ \t]+[0-9]+")
-            if(_ff_major_lines)
-                list(GET _ff_major_lines 0 _ff_major_line)
-                string(REGEX REPLACE "^.*LIBAVCODEC_VERSION_MAJOR[ \t]+([0-9]+).*$" "\\1"
-                       _ff_major "${_ff_major_line}")
+            file(STRINGS "${_ff_version_header}" _ff_version_line REGEX "^#define LIBAVCODEC_VERSION_MAJOR")
+            if(_ff_version_line MATCHES "([0-9]+)")
+                set(_ff_major "${CMAKE_MATCH_1}")
             endif()
         endif()
-        if(_ff_major LESS SH_FFMPEG_MIN_AVCODEC_MAJOR)
-            message(STATUS "ffmpeg headers at ${_ff_header_root} are libavcodec major "
-                "${_ff_major}; ${SH_FFMPEG_MIN_AVCODEC_MAJOR}+ (ffmpeg 6.0+) required")
+
+        if(_ff_major VERSION_LESS SH_FFMPEG_MIN_AVCODEC_MAJOR)
+            message(WARNING "ffmpeg headers found at ${_ff_header_root} are too old "
+                "(libavcodec major ${_ff_major}; ${SH_FFMPEG_MIN_AVCODEC_MAJOR}+ (ffmpeg 6.0+) required)")
             set(FFMPEG_HEADERS_FOUND FALSE)
         endif()
     endif()
 
     if(FFMPEG_HEADERS_FOUND)
         if(FFMPEG_HEADER_DIRS)
-            target_include_directories(SilentHillPC PRIVATE ${FFMPEG_HEADER_DIRS})
+            target_include_directories(${EXECUTABLE_NAME} PRIVATE ${FFMPEG_HEADER_DIRS})
         endif()
-        target_compile_definitions(SilentHillPC PRIVATE SH_FMV_FFMPEG)
+        target_compile_definitions(${EXECUTABLE_NAME} PRIVATE SH_FMV_FFMPEG)
         message(STATUS "ffmpeg FMV fallback ENABLED (runtime-loaded, libavcodec major "
             "${_ff_major}, headers: ${_ff_header_root})")
     else()
@@ -534,25 +569,52 @@ if(SH_FMV_FFMPEG)
     endif()
 endif()
 
-if(WIN32)
-    target_link_libraries(SilentHillPC PRIVATE opengl32 winmm m)
+if(SH_SWITCH)
+    # SDL2 and OpenAL: linked directly here (psycross_static uses PRIVATE so
+    # these don't propagate). Must precede libnx because SDL2 references libnx.
+    if(SDL2_LIBRARY)
+        target_link_libraries(${EXECUTABLE_NAME} PRIVATE ${SDL2_LIBRARY})
+    endif()
+    if(OPENGL_glesv2_LIBRARY AND OPENGL_egl_LIBRARY)
+        target_link_libraries(${EXECUTABLE_NAME} PRIVATE ${OPENGL_glesv2_LIBRARY} ${OPENGL_egl_LIBRARY})
+    endif()
+    # Mesa EGL on Switch depends on libdrm_nouveau (nouveau kernel driver) and
+    # libglapi (GL API dispatch).  GNU ld needs these AFTER EGL.
+    if(DRM_NOUVEAU_LIBRARY)
+        target_link_libraries(${EXECUTABLE_NAME} PRIVATE ${DRM_NOUVEAU_LIBRARY})
+    endif()
+    if(GLAPI_LIBRARY)
+        target_link_libraries(${EXECUTABLE_NAME} PRIVATE ${GLAPI_LIBRARY})
+    endif()
+    if(OPENAL_LIBRARY)
+        target_link_libraries(${EXECUTABLE_NAME} PRIVATE ${OPENAL_LIBRARY})
+    endif()
+    # libnx must appear after all other libraries (SDL2 references libnx symbols)
+    target_link_libraries(${EXECUTABLE_NAME} PRIVATE nx)
+elseif(WIN32)
+    target_link_libraries(${EXECUTABLE_NAME} PRIVATE opengl32 winmm m)
 elseif(UNIX)
     find_package(OpenGL REQUIRED)
-    target_link_libraries(SilentHillPC PRIVATE OpenGL::GL)
+    target_link_libraries(${EXECUTABLE_NAME} PRIVATE OpenGL::GL)
+    if(OPENAL_LIBRARY)
+        target_link_libraries(${EXECUTABLE_NAME} PRIVATE ${OPENAL_LIBRARY})
+    else()
+        target_link_libraries(${EXECUTABLE_NAME} PRIVATE openal)
+    endif()
 endif()
 
 # =============================================================================
 # Compiler flags
 # =============================================================================
 if(MSVC)
-    target_compile_options(SilentHillPC PRIVATE
+    target_compile_options(${EXECUTABLE_NAME} PRIVATE
         /W3
         /wd4996  # deprecated functions
         /wd4244  # conversion warnings
         /wd4267  # size_t conversions
     )
 else()
-    target_compile_options(SilentHillPC PRIVATE
+    target_compile_options(${EXECUTABLE_NAME} PRIVATE
         -Wall
         -Wno-unused-variable
         -Wno-unused-function
@@ -567,7 +629,7 @@ else()
     if(APPLE)
         # AppleClang is stricter than GCC on the WIP decomp's implicit decls and
         # qualifier/conversion mismatches; demote these to warnings on macOS.
-        target_compile_options(SilentHillPC PRIVATE
+        target_compile_options(${EXECUTABLE_NAME} PRIVATE
             -Wno-implicit-function-declaration
             -Wno-ignored-qualifiers
             -Wno-int-conversion
@@ -587,7 +649,7 @@ else()
     # names don't exist, so an unconditional block fails every C TU. On GCC 13
     # the warnings here are not errors anyway, so the block is a no-op there.
     if(CMAKE_C_COMPILER_ID STREQUAL "GNU" AND CMAKE_C_COMPILER_VERSION VERSION_GREATER_EQUAL 14)
-        target_compile_options(SilentHillPC PRIVATE
+        target_compile_options(${EXECUTABLE_NAME} PRIVATE
             $<$<COMPILE_LANGUAGE:C>:-Wno-error=implicit-function-declaration>
             $<$<COMPILE_LANGUAGE:C>:-Wno-error=implicit-int>
             $<$<COMPILE_LANGUAGE:C>:-Wno-error=int-conversion>
@@ -613,15 +675,18 @@ endif()
 # =============================================================================
 # Map Overlay DLLs (optional — builds all maps as loadable modules)
 # =============================================================================
-option(SH_BUILD_MAP_DLLS "Build map overlays as DLLs for dynamic loading" OFF)
-if(SH_BUILD_MAP_DLLS)
-    add_subdirectory(maps)
+# Map DLLs not supported on Switch yet
+if(NOT SH_SWITCH)
+    option(SH_BUILD_MAP_DLLS "Build map overlays as DLLs for dynamic loading" OFF)
+    if(SH_BUILD_MAP_DLLS)
+        add_subdirectory(maps)
+    endif()
 endif()
 
 # =============================================================================
 # Install
 # =============================================================================
-install(TARGETS SilentHillPC RUNTIME DESTINATION bin)
+install(TARGETS ${EXECUTABLE_NAME} RUNTIME DESTINATION bin)
 
 # =============================================================================
 # Tests (-DBUILD_TESTING=ON, then ctest)

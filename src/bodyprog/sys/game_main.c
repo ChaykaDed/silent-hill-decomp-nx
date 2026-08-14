@@ -4,6 +4,7 @@
 #include "sh_log.h"
 #include "pc_config.h"
 #include "xa_player.h"
+#include "fmv/fmv_player.h"
 #include <SDL_timer.h>
 #include <math.h>
 extern void PsyX_EndScene(void);
@@ -1951,7 +1952,6 @@ void GameState_Boot_Update(void) // 0x80032D1C
                 g_GameWork.gameStateSteps[0] = gameState;
 #ifdef SH_PC_PORT
                 if (g_PcConfig.skipIntros) {
-                    /* Normally called by b_konami.c; must happen before MainMenu */
                     Settings_RestoreDefaults();
                     g_GameWork.gameState = GameState_MainMenu;
                 } else
@@ -2045,6 +2045,18 @@ void MainLoop(void) // 0x80032EE0
     {
         extern int g_PcHorPlusEnabled;
         extern void Pc_PlayWarningScreen(void);
+        extern const char* PcPort_GetGameDataPath(void);
+
+        /* PS1 boot splash — before everything including the warning screen */
+        const char* ps1Paths[] = {
+            "sdmc:/gamedata/fmv/PS1_INTRO.AVI",
+            "sdmc:/gamedata/PS1_INTRO.AVI",
+        };
+        for (int i = 0; i < 2; i++) {
+            if (FMV_PlayAviFile(ps1Paths[i], -1) == 0)
+                break;
+        }
+
         const int prevHor = g_PcHorPlusEnabled;
         g_PcHorPlusEnabled = 0;
         Pc_PlayWarningScreen();
