@@ -34,7 +34,15 @@ Drop a Silent Hill PS1 BIN dump in `gamedata/` next to the NRO. On Ryujinx that'
 
 ## PS1 Intro
 
-The NRO includes a PS1 boot intro (1280A-720 MJPG PCM mono 22050Hz) that plays fullscreen before the Konami warning screen. It's optional — just delete `gamedata/fmv/PS1_INTRO.AVI` and it won't play.
+The NRO includes a PS1 boot intro (1280x720 MJPG PCM mono 22050Hz) that plays fullscreen before the Konami warning screen. It's optional — just delete `gamedata/fmv/PS1_INTRO.AVI` and it won't play. The video was remastered to 720p (lanczos) from a 4K capture of the original, and plays cover-filled (16:9 crop of the overflow) instead of letterboxed.
+
+## Widescreen
+
+The game renders at 1280x720 with Hor+ widescreen (no bars, correct proportions). Since the original levels are 4:3-sized rooms surrounded by empty space, there's a `widescreen_zoom` config option (default 1.2) that zooms in to crop the empty space beyond the walls. Set `widescreen_mode = 0` in `config.cfg` for a plain pillarboxed 4:3 view, or `2` for a stretched fullscreen.
+
+## Russian (Team Raccoon) translation
+
+Disc images of the Russian fan translation by Team Raccoon are supported. The menu is translated (in the disc's own byte encoding), and game text renders from the disc itself - no extra font files needed.
 
 ## How It Works
 
@@ -47,12 +55,12 @@ FMV video runs through the game's existing decoder with a shader version fix (`#
 - Gameplay and controls working
 - In-game rendering working
 - FMV cutscenes with audio
-- Original PS1 boot intro (added just for fun)
+- PS1 boot intro (720p remaster from 4K source)
+- Widescreen 16:9 Hor+ with configurable zoom
+- Russian fan translation (Team Raccoon) discs supported
 
 ## Issues:
-- The .bin files of the game with the Russian translation by Team Raccoon are currently not supported.
-Work on fixing this issue is in progress.
-For now, please use the English version of the game.
+- None known at the moment.
 
 ## Credits
 
