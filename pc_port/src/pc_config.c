@@ -23,11 +23,11 @@ s_PcConfig g_PcConfig = {
     .showConsole    = 0,
     .psxDither      = 1, /* 0=off, 1=PSX dither, 2=bilinear */
     .widescreenMode  = 1, /* 0=pillarbox, 1=Hor+ (default, no bars + correct proportions), 2=stretch */
-    /* Hor+ zoom, default 1.2: Silent Hill rooms are 4:3-sized islands (one room
+    /* Hor+ zoom, default 1.3: Silent Hill rooms are 4:3-sized islands (one room
      * per 40u cell, 16-28u of dead space between) — the full Hor+ reveal shows
-     * that void past the walls. 1.2 crops most of it while keeping the image
-     * wider than 4:3; characters read ~20% larger. */
-    .widescreenZoom  = 1.2f, /* >1 zooms in (bigger chars, crops void) */
+     * that void past the walls. 1.3 crops almost all of it while keeping the
+     * image wider than 4:3; characters read ~30% larger. */
+    .widescreenZoom  = 1.3f, /* >1 zooms in (bigger chars, crops void) */
     .menuPillarbox   = 1, /* 1=pillarbox 2D screens (black bars), 0=stretch to fill */
     .allowLooseFiles = 0, /* 0=disc image only, 1=scan gamedata/load/ first */
     .residentTextures = 1, /* 1=expanded chunk-texture pool w/ per-slot GL textures (whole map textured), 0=vanilla 8+2 VRAM pool */
