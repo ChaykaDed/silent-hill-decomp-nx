@@ -2047,10 +2047,13 @@ void MainLoop(void) // 0x80032EE0
         extern void Pc_PlayWarningScreen(void);
         extern const char* PcPort_GetGameDataPath(void);
 
-        /* PS1 boot splash — before everything including the warning screen */
+        /* PS1 boot splash — before everything including the warning screen.
+         * Relative to CWD (sdmc:/switch/ on a console, sdmc:/ on Ryujinx) like
+         * the rest of the game data — the absolute sdmc:/gamedata/ path only
+         * matched Ryujinx's root layout and skipped the intro on a console. */
         const char* ps1Paths[] = {
-            "sdmc:/gamedata/fmv/PS1_INTRO.AVI",
-            "sdmc:/gamedata/PS1_INTRO.AVI",
+            "gamedata/fmv/PS1_INTRO.AVI",
+            "gamedata/PS1_INTRO.AVI",
         };
         for (int i = 0; i < 2; i++) {
             if (FMV_PlayAviFile(ps1Paths[i], -1) == 0)
